@@ -2,3 +2,4 @@ SUBDIRS = src
 MAINTAINERCLEANFILES = Makefile.in
 EXTRA_DIST = \
 	fortdep.py
+ACLOCAL_AMFLAGS = -I m4

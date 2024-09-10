@@ -9,3 +9,4 @@
 
 SUBDIRS = libana converter interface mode_analysis trj_analysis utilities sp_analysis free_energy clustering
 EXTRA_DIST = cg_tools
+ACLOCAL_AMFLAGS = -I m4
