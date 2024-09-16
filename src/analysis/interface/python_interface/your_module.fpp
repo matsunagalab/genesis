@@ -45,7 +45,7 @@ contains
     call input_files(inp_info, pdb=pdb)
   
     ! Define molecule
-    call define_molecule(pdb, molecule)
+    call define_molecules(molecule, pdb=pdb)
   
     ! Set output values
     num_atoms = molecule%num_atoms

@@ -1,7 +1,15 @@
 import ctypes
+import os
 
 # ライブラリをロード
-lib = ctypes.CDLL('./python_interface.la')
+lib_name = 'libpython_interface.so'
+lib_dir = os.path.join(os.path.dirname(__file__), '.libs')
+lib_path = os.path.join(lib_dir, lib_name)
+
+if not os.path.exists(lib_path):
+    raise FileNotFoundError(f"Library file {lib_name} not found in {lib_dir}")
+
+lib = ctypes.CDLL(lib_path)
 
 # 関数のプロトタイプを定義
 lib.define_molecule_from_pdb.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
