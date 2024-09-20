@@ -23,6 +23,8 @@ atom_coords_ptr = ctypes.c_void_p()
 
 lib.define_molecule_from_pdb(pdb_filename, ctypes.byref(num_atoms), ctypes.byref(atom_names_ptr), ctypes.byref(atom_coords_ptr))
 
+print("num_atoms = ", num_atoms)
+
 # 結果を処理する
 # ...
 
