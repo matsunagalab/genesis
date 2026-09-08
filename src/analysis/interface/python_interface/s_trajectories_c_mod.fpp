@@ -20,6 +20,10 @@ module s_trajectories_c_mod
   public :: init_empty_s_trajectories_c
   public :: deallocate_s_trajectories_c
   public :: deallocate_s_trajectories_c_array
+  ! bind(C) entry points called from Python must also be PUBLIC (gfortran 16.2.0
+  ! hides PRIVATE bind(C) procedures, PR fortran/126872).
+  public :: allocate_s_trajectories_c_array
+  public :: join_s_trajectories_c
 
   ! Module-level save pointer for trajectory arrays (to prevent dangling pointer)
   ! Note: This is NOT thread-safe. GENESIS Python interface is single-threaded only.

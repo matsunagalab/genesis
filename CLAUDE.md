@@ -42,6 +42,9 @@ the source of truth:
   `genesis_exe.<name>` API when practical.
 - ctypes signatures belong in `src/genepie/libgenesis.py`. Keep Python
   `argtypes` exactly aligned with the Fortran `bind(C)` signature.
+- Every `bind(C)` entry point that Python looks up must be `public` in its
+  Fortran module; gfortran 16.2 hides `private` `bind(C)` procedures from
+  `dlsym` (GCC PR fortran/126872).
 - Prefer the shared CLI/Python analysis core when one exists. `trj_source_mod`
   abstracts file, memory, and lazy-DCD input; `result_sink_mod` abstracts file
   and NumPy-array output.

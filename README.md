@@ -565,6 +565,10 @@ data through a context variable. Never use an internal (`contains`) procedure as
 `c_funloc()` of it makes gfortran generate a trampoline, which needs an executable stack, which `dlopen()`
 refuses on glibc >= 2.41. The build fails with `-Werror=trampolines` on purpose if this happens.
 
+Declare every `bind(C)` entry point that Python looks up **`public`** in its module, even though the
+binding label alone gives it external linkage: gfortran 16.2.0 gives `private` `bind(C)` procedures hidden
+visibility (GCC PR fortran/126872), and `dlsym()` then cannot find them.
+
 Skeleton for a new tool `foo` in `src/analysis/interface/python_interface/foo_c_mod.fpp`
 (`rmsd_c_mod.fpp` is a complete, tested example; `hb_c_mod.fpp` shows a control-text based tool with a
 text sink):

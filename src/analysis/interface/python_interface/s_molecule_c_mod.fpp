@@ -110,6 +110,10 @@ module s_molecule_c_mod
   public :: f2c_s_molecule
   public :: c2f_s_molecule
   public :: deallocate_s_molecule_c
+  ! bind(C) entry points called from Python must also be PUBLIC: gfortran
+  ! 16.2.0 gives PRIVATE bind(C) procedures hidden visibility (PR fortran/126872),
+  ! so dlsym() cannot find them.
+  public :: allocate_s_molecule_c
 
 contains
 

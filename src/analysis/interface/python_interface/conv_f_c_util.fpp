@@ -41,6 +41,9 @@ module conv_f_c_util
   public :: deallocate_double
   public :: deallocate_double2
   public :: deallocate_c_string
+  ! bind(C) entry point looked up from Python; must be PUBLIC (gfortran 16.2.0
+  ! hides PRIVATE bind(C) procedures, PR fortran/126872).
+  public :: allocate_c_double_array2
 
 contains
   ! Helper function to convert C string to Fortran string
