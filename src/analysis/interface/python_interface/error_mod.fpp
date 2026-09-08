@@ -5,25 +5,53 @@
 !
 !--------1---------2---------3---------4---------5---------6---------7---------8
 module error_mod
-  use iso_c_binding, only: c_int, c_char, c_null_char, c_funptr
+  use iso_c_binding, only: c_int, c_char, c_null_char, c_funptr, c_ptr, &
+                           c_funloc, c_loc
   implicit none
   private
   public :: s_error, error_init, error_clear, error_set, error_has, &
             fi_msg_len, error_to_c, error_finish_to_c, &
-            fi_error_guard_run, error_from_pending
+            fi_error_guard_run_ctx, error_from_pending, &
+            guard_body_iface, run_guarded
 
   ! Library-mode error guard (implemented in lib.a / fileio_data_.c).
-  ! fi_error_guard_run runs a bind(C) body under a setjmp guard and returns a
-  ! nonzero value if the body aborted via error_msg (see messages_mod). A
-  ! bind(C) wrapper then turns the pending error into an s_error and reports it
-  ! to the C caller, instead of the process being killed by exit(1).
+  !
+  ! fi_error_guard_run_ctx(body, ctx) calls body(ctx) under a setjmp guard and
+  ! returns a nonzero value if the body aborted via error_msg (see
+  ! messages_mod). The bind(C) wrapper then turns the pending error into an
+  ! s_error (error_from_pending) and reports it to the C caller, instead of
+  ! the process being killed by exit(1).
+  !
+  ! Wrappers normally call the run_guarded helper below instead of using
+  ! fi_error_guard_run_ctx directly. Usage pattern (see rmsd_analysis_lazy_c
+  ! for a complete example):
+  !   * put every input, output and resource the body touches into a
+  !     derived-type variable with the TARGET attribute in the wrapper;
+  !   * make the body a bind(C) MODULE procedure taking type(c_ptr), value,
+  !     and recover the context with c_f_pointer;
+  !   * report failures only through the s_error in the context, and let the
+  !     wrapper release the context's resources after the guard returns.
+  ! Never pass c_funloc() of an INTERNAL procedure: host association forces
+  ! gfortran to build a trampoline on the stack, which makes the shared
+  ! library require an executable stack; dlopen() refuses that on
+  ! glibc >= 2.41, and it crashes outright on non-executable stacks.
   interface
-    function fi_error_guard_run(body) bind(C, name="fi_error_guard_run") &
-        result(rc)
-      import :: c_int, c_funptr
+    function fi_error_guard_run_ctx(body, ctx) &
+        bind(C, name="fi_error_guard_run_ctx") result(rc)
+      import :: c_int, c_funptr, c_ptr
       type(c_funptr), value :: body
+      type(c_ptr),    value :: ctx
       integer(c_int)        :: rc
-    end function fi_error_guard_run
+    end function fi_error_guard_run_ctx
+  end interface
+
+  ! Interface of a guarded body (see run_guarded): a bind(C) MODULE procedure
+  ! that receives the wrapper's context as an opaque pointer.
+  abstract interface
+    subroutine guard_body_iface(ctx) bind(C)
+      import :: c_ptr
+      type(c_ptr), value :: ctx
+    end subroutine guard_body_iface
   end interface
 
   ! Legacy error code (kept for backward compatibility)
@@ -78,7 +106,7 @@ contains
   end function
 
   !> Populate err from the error that error_msg recorded before unwinding.
-  !! Used on the failure path of fi_error_guard_run so the C caller receives
+  !! Used on the failure path of run_guarded so the C caller receives
   !! the message and category code exactly as the aborting routine reported.
   subroutine error_from_pending(err)
     use messages_mod, only: fi_pending_msg, fi_pending_code
@@ -167,5 +195,26 @@ contains
     if (msglen > 0) msg(1) = c_null_char
   end subroutine
 
-end module error_mod
+  !> Run body(ctx) under the library-mode error guard and report the outcome
+  !! to the C caller in one call.
+  !!
+  !! ctx is the wrapper's context variable (any derived type; it needs the
+  !! TARGET attribute). On a normal return err is whatever the body left in
+  !! it; when the body aborted through error_msg, err receives the pending
+  !! message/code. Either way status/msg are filled, so the wrapper only has
+  !! to copy its outputs out of ctx and release the resources recorded there.
+  subroutine run_guarded(body, ctx, err, status, msg, msglen)
+    procedure(guard_body_iface)           :: body
+    type(*), target,        intent(inout) :: ctx
+    type(s_error),          intent(inout) :: err
+    integer(c_int),         intent(inout) :: status
+    character(kind=c_char), intent(inout) :: msg(*)
+    integer(c_int),         value         :: msglen
 
+    if (fi_error_guard_run_ctx(c_funloc(body), c_loc(ctx)) /= 0) then
+      call error_from_pending(err)
+    end if
+    call error_finish_to_c(err, status, msg, msglen)
+  end subroutine run_guarded
+
+end module error_mod

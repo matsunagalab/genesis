@@ -15,50 +15,59 @@
  *  These helpers let a bind(C) wrapper run its body under a setjmp guard.
  *  While a guard is armed, error_msg() records the pending message/code
  *  (in messages_mod) and calls fi_error_signal(), which longjmps back to
- *  fi_error_guard_run() instead of exiting. Outside a guard (armed == 0)
- *  error_msg() keeps its original exit(1) behaviour, so the CLI/atdyn/spdyn
- *  binaries are completely unaffected.
+ *  fi_error_guard_run_ctx() instead of exiting. Outside a guard (no armed
+ *  frame) error_msg() keeps its original exit(1) behaviour, so the
+ *  CLI/atdyn/spdyn binaries are completely unaffected.
+ *
+ *  The body receives an opaque context pointer so that it can be an ordinary
+ *  (module) procedure. Do NOT pass c_funloc() of an internal procedure:
+ *  gfortran implements that with a trampoline on the stack, which marks the
+ *  shared library as requiring an executable stack, and dlopen() rejects
+ *  such libraries on glibc >= 2.41.
+ *
+ *  Guards nest correctly: every frame keeps its own jmp_buf and the innermost
+ *  armed one is the longjmp target. Not thread-safe (the interface as a
+ *  whole is not).
  *
  *  These functions live here (rather than in a dedicated file) so that they
  *  are compiled into lib.a and therefore visible to every binary that links
  *  it, without touching the autotools-generated build files.
  *========================================================================*/
 
-static jmp_buf      fi_guard_buf;
-static volatile int fi_guard_armed = 0;
+static jmp_buf *volatile fi_guard_cur = NULL;   /* innermost armed guard */
 
 /* Is a guard currently armed on this call stack? (queried by error_msg) */
 int fi_error_is_armed(void)
 {
-  return fi_guard_armed;
+  return fi_guard_cur != NULL;
 }
 
 /* Abort the current guarded region. Does nothing (returns) when no guard is
  * armed, letting the caller fall through to its normal exit(1) path. */
 void fi_error_signal(void)
 {
-  if (!fi_guard_armed)
+  jmp_buf *target = fi_guard_cur;
+  if (target == NULL)
     return;
-  fi_guard_armed = 0;
-  longjmp(fi_guard_buf, 1);
+  longjmp(*target, 1);
 }
 
-/* Run body() under a setjmp guard. Returns 0 when body() completes normally
- * and 1 when body() triggered fi_error_signal(). Nested guards are supported
- * (the previous armed state is restored on the way out). */
-int fi_error_guard_run(void (*body)(void))
+/* Run body(ctx) under a setjmp guard. Returns 0 when body() completes
+ * normally and 1 when body() triggered fi_error_signal(). */
+int fi_error_guard_run_ctx(void (*body)(void *), void *ctx)
 {
-  int prev = fi_guard_armed;
-  int rc;
+  jmp_buf        buf;
+  jmp_buf *const prev = fi_guard_cur;
+  int            rc;
 
-  fi_guard_armed = 1;
-  if (setjmp(fi_guard_buf) == 0) {
-    body();
+  fi_guard_cur = &buf;
+  if (setjmp(buf) == 0) {
+    body(ctx);
     rc = 0;
   } else {
     rc = 1;
   }
-  fi_guard_armed = prev;
+  fi_guard_cur = prev;
   return rc;
 }
 

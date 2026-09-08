@@ -31,14 +31,84 @@ module crd_convert_c_mod
   use mpi_parallel_mod
   implicit none
 
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
+  !  Contexts shared between the bind(C) entry points below and their guarded
+  !  bodies (see run_guarded in error_mod). Reference arguments of the entry
+  !  points are stored as C pointers and re-materialised in the body.
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  type :: t_crd_convert_ctx
+    ! inputs
+    type(c_ptr) :: molecule_ptr = c_null_ptr    ! caller's s_molecule_c
+    type(c_ptr) :: ctrl_text_ptr = c_null_ptr
+    integer     :: ctrl_len = 0
+    ! outputs (copied back to the bind(C) arguments by the wrapper)
+    type(c_ptr)    :: s_trajes_c_array = c_null_ptr
+    integer(c_int) :: num_trajs = 0
+    type(c_ptr)    :: selected_atom_indices = c_null_ptr
+    integer(c_int) :: num_selected_atoms = 0
+    ! error state and resources released by the wrapper
+    type(s_error)    :: err
+    type(s_molecule) :: f_molecule
+  end type t_crd_convert_ctx
+
+  type :: t_crd_convert_info_ctx
+    ! inputs
+    type(c_ptr)    :: molecule_ptr = c_null_ptr
+    type(c_ptr)    :: trj_filenames_ptr = c_null_ptr
+    integer(c_int) :: n_trj_files = 0
+    integer(c_int) :: filename_len = 0
+    integer(c_int) :: trj_format = 0
+    integer(c_int) :: trj_type = 0
+    ! outputs (frame_counts is handed to Python on success)
+    integer(c_int)          :: n_trajs = 0
+    integer(c_int), pointer :: frame_counts(:) => null()
+    ! error state and resources released by the wrapper
+    type(s_error)    :: err
+    type(s_molecule) :: f_molecule
+  end type t_crd_convert_info_ctx
+
+  type :: t_crd_convert_zerocopy_ctx
+    ! inputs
+    type(c_ptr)    :: molecule_ptr = c_null_ptr
+    type(c_ptr)    :: trj_filenames_ptr = c_null_ptr
+    integer(c_int) :: n_trj_files = 0
+    integer(c_int) :: filename_len = 0
+    integer(c_int) :: trj_format = 0
+    integer(c_int) :: trj_type = 0
+    type(c_ptr)    :: selected_indices = c_null_ptr
+    integer(c_int) :: n_selected = 0
+    integer(c_int) :: fitting_method = 0
+    type(c_ptr)    :: fitting_indices = c_null_ptr
+    integer(c_int) :: n_fitting = 0
+    integer(c_int) :: mass_weighted = 0
+    integer(c_int) :: do_centering = 0
+    type(c_ptr)    :: centering_indices = c_null_ptr
+    integer(c_int) :: n_centering = 0
+    type(c_ptr)    :: center_coord = c_null_ptr
+    integer(c_int) :: pbcc_mode = 0
+    integer(c_int) :: ana_period = 1
+    type(c_ptr)    :: frame_counts = c_null_ptr
+    type(c_ptr)    :: coords_ptrs = c_null_ptr
+    type(c_ptr)    :: pbc_box_ptrs = c_null_ptr
+    ! error state and resources released by the wrapper
+    type(s_error)    :: err
+    type(s_molecule) :: f_molecule
+  end type t_crd_convert_zerocopy_ctx
+
+  private :: t_crd_convert_ctx, t_crd_convert_info_ctx, t_crd_convert_zerocopy_ctx
+  private :: crd_convert_body, crd_convert_info_body, crd_convert_zerocopy_body
+
 contains
   subroutine crd_convert_c( &
           molecule, ctrl_text, ctrl_len, s_trajes_c_array, num_trajs, &
           selected_atom_indices, num_selected_atoms, status, msg, msglen) &
           bind(C, name="crd_convert_c")
     implicit none
-    type(s_molecule_c), intent(inout) :: molecule
-    character(kind=c_char), intent(in) :: ctrl_text(*)
+    type(s_molecule_c), intent(inout), target :: molecule
+    character(kind=c_char), intent(in), target :: ctrl_text(*)
     integer(c_int), value :: ctrl_len
     type(c_ptr), intent(out) :: s_trajes_c_array
     integer(c_int), intent(out) :: num_trajs
@@ -48,30 +118,45 @@ contains
     character(kind=c_char),  intent(out) :: msg(*)
     integer(c_int),          value       :: msglen
 
-    type(s_molecule) :: f_molecule
+    type(t_crd_convert_ctx), target :: c
 
-    type(s_error) :: err
-    integer(c_int) :: grc
+    c%molecule_ptr  = c_loc(molecule)
+    c%ctrl_text_ptr = c_loc(ctrl_text)
+    c%ctrl_len      = ctrl_len
 
-    call error_init(err)
-    ! Safe defaults so the C side never reads uninitialised outputs if the
-    ! guard aborts the run (e.g. a missing trajectory file -> exit(1)).
-    s_trajes_c_array     = c_null_ptr
-    num_trajs            = 0
-    selected_atom_indices = c_null_ptr
-    num_selected_atoms   = 0
+    ! Run under the library-mode error guard: a missing trajectory file calls
+    ! error_msg -> exit(1) in CLI mode (see run_guarded in error_mod).
+    call run_guarded(crd_convert_body, c, c%err, status, msg, msglen)
 
-    grc = fi_error_guard_run(c_funloc(run_body))
-    if (grc /= 0) call error_from_pending(err)
-    call error_finish_to_c(err, status, msg, msglen)
-  contains
-    subroutine run_body() bind(C)
-      call c2f_s_molecule(molecule, f_molecule)
-      call crd_convert_main(f_molecule, ctrl_text, ctrl_len, s_trajes_c_array, &
-                           num_trajs, selected_atom_indices, num_selected_atoms, &
-                           err)
-    end subroutine run_body
+    ! The outputs keep their safe defaults (null / 0) when the body aborted,
+    ! so the C side never reads uninitialised values.
+    s_trajes_c_array      = c%s_trajes_c_array
+    num_trajs             = c%num_trajs
+    selected_atom_indices = c%selected_atom_indices
+    num_selected_atoms    = c%num_selected_atoms
+
+    call dealloc_molecules_all(c%f_molecule)
   end subroutine crd_convert_c
+
+  !> Guarded body of crd_convert_c (see run_guarded in error_mod).
+  subroutine crd_convert_body(ctx) bind(C, name="crd_convert_body")
+    implicit none
+    type(c_ptr), value :: ctx
+
+    type(t_crd_convert_ctx), pointer :: c
+    type(s_molecule_c), pointer :: molecule
+    character(kind=c_char), pointer :: ctrl_text(:)
+
+    call c_f_pointer(ctx, c)
+    call c_f_pointer(c%molecule_ptr, molecule)
+    call c_f_pointer(c%ctrl_text_ptr, ctrl_text, [c%ctrl_len])
+
+    call c2f_s_molecule(molecule, c%f_molecule)
+    call crd_convert_main(c%f_molecule, ctrl_text, c%ctrl_len, &
+                          c%s_trajes_c_array, c%num_trajs, &
+                          c%selected_atom_indices, c%num_selected_atoms, &
+                          c%err)
+  end subroutine crd_convert_body
 
   subroutine crd_convert_main(molecule, ctrl_text, ctrl_len, s_trajes_c_array, num_trajs, &
                               selected_atom_indices, num_selected_atoms, err)
@@ -311,8 +396,8 @@ contains
           bind(C, name="crd_convert_info_c")
     implicit none
 
-    type(s_molecule_c), intent(in) :: molecule_c
-    character(kind=c_char), intent(in) :: trj_filenames(*)
+    type(s_molecule_c), intent(in), target :: molecule_c
+    character(kind=c_char), intent(in), target :: trj_filenames(*)
     integer(c_int), value :: n_trj_files
     integer(c_int), value :: filename_len
     integer(c_int), value :: trj_format
@@ -323,44 +408,53 @@ contains
     character(kind=c_char), intent(out) :: msg(*)
     integer(c_int), value :: msglen
 
-    type(s_molecule) :: f_molecule
-    type(s_error) :: err
-    integer(c_int), pointer :: frame_counts(:)
-    integer(c_int) :: grc
+    type(t_crd_convert_info_ctx), target :: c
 
-    call error_init(err)
-    frame_counts_ptr = c_null_ptr
-    n_trajs = 0
-    nullify(frame_counts)
+    c%molecule_ptr      = c_loc(molecule_c)
+    c%trj_filenames_ptr = c_loc(trj_filenames)
+    c%n_trj_files       = n_trj_files
+    c%filename_len      = filename_len
+    c%trj_format        = trj_format
+    c%trj_type          = trj_type
 
     ! Guard the file-reading section: a missing/unreadable trajectory calls
     ! error_msg -> exit(1) in CLI mode, which would kill the Python process.
-    grc = fi_error_guard_run(c_funloc(run_body))
-    if (grc /= 0) call error_from_pending(err)
+    call run_guarded(crd_convert_info_body, c, c%err, status, msg, msglen)
 
-    call error_finish_to_c(err, status, msg, msglen)
-
-    if (error_has(err)) then
-      if (associated(frame_counts)) deallocate(frame_counts)
+    n_trajs = c%n_trajs
+    if (error_has(c%err)) then
+      if (associated(c%frame_counts)) deallocate(c%frame_counts)
       frame_counts_ptr = c_null_ptr
     else
-      frame_counts_ptr = c_loc(frame_counts(1))
+      frame_counts_ptr = c_loc(c%frame_counts(1))
     end if
 
-    call dealloc_molecules_all(f_molecule)
-
-  contains
-    subroutine run_body() bind(C)
-      call c2f_s_molecule(molecule_c, f_molecule)
-
-      ! Allocate frame counts array
-      allocate(frame_counts(n_trj_files))
-
-      ! Get trajectory info
-      call get_info(f_molecule, trj_filenames, n_trj_files, filename_len, &
-                    trj_format, trj_type, frame_counts, n_trajs, err)
-    end subroutine run_body
+    call dealloc_molecules_all(c%f_molecule)
   end subroutine crd_convert_info_c
+
+  !> Guarded body of crd_convert_info_c (see run_guarded in error_mod).
+  subroutine crd_convert_info_body(ctx) bind(C, name="crd_convert_info_body")
+    implicit none
+    type(c_ptr), value :: ctx
+
+    type(t_crd_convert_info_ctx), pointer :: c
+    type(s_molecule_c), pointer :: molecule_c
+    character(kind=c_char), pointer :: trj_filenames(:)
+
+    call c_f_pointer(ctx, c)
+    call c_f_pointer(c%molecule_ptr, molecule_c)
+    call c_f_pointer(c%trj_filenames_ptr, trj_filenames, &
+                     [c%n_trj_files * c%filename_len])
+
+    call c2f_s_molecule(molecule_c, c%f_molecule)
+
+    ! Allocate frame counts array (ownership passes to Python on success)
+    allocate(c%frame_counts(c%n_trj_files))
+
+    ! Get trajectory info
+    call get_info(c%f_molecule, trj_filenames, c%n_trj_files, c%filename_len, &
+                  c%trj_format, c%trj_type, c%frame_counts, c%n_trajs, c%err)
+  end subroutine crd_convert_info_body
 
   !======1=========2=========3=========4=========5=========6=========7=========8
   !
@@ -407,8 +501,8 @@ contains
           bind(C, name="crd_convert_zerocopy_c")
     implicit none
 
-    type(s_molecule_c), intent(in) :: molecule_c
-    character(kind=c_char), intent(in) :: trj_filenames(*)
+    type(s_molecule_c), intent(in), target :: molecule_c
+    character(kind=c_char), intent(in), target :: trj_filenames(*)
     integer(c_int), value :: n_trj_files
     integer(c_int), value :: filename_len
     integer(c_int), value :: trj_format
@@ -432,61 +526,91 @@ contains
     character(kind=c_char), intent(out) :: msg(*)
     integer(c_int), value :: msglen
 
-    type(s_molecule) :: f_molecule
-    type(s_error) :: err
+    type(t_crd_convert_zerocopy_ctx), target :: c
+
+    c%molecule_ptr      = c_loc(molecule_c)
+    c%trj_filenames_ptr = c_loc(trj_filenames)
+    c%n_trj_files       = n_trj_files
+    c%filename_len      = filename_len
+    c%trj_format        = trj_format
+    c%trj_type          = trj_type
+    c%selected_indices  = selected_indices
+    c%n_selected        = n_selected
+    c%fitting_method    = fitting_method
+    c%fitting_indices   = fitting_indices
+    c%n_fitting         = n_fitting
+    c%mass_weighted     = mass_weighted
+    c%do_centering      = do_centering
+    c%centering_indices = centering_indices
+    c%n_centering       = n_centering
+    c%center_coord      = center_coord
+    c%pbcc_mode         = pbcc_mode
+    c%ana_period        = ana_period
+    c%frame_counts      = frame_counts
+    c%coords_ptrs       = coords_ptrs
+    c%pbc_box_ptrs      = pbc_box_ptrs
+
+    ! Guard the conversion: a missing/unreadable trajectory calls error_msg ->
+    ! exit(1) in CLI mode, which would kill the Python process.
+    call run_guarded(crd_convert_zerocopy_body, c, c%err, status, msg, msglen)
+
+    call dealloc_molecules_all(c%f_molecule)
+  end subroutine crd_convert_zerocopy_c
+
+  !> Guarded body of crd_convert_zerocopy_c (see run_guarded in error_mod).
+  subroutine crd_convert_zerocopy_body(ctx) &
+        bind(C, name="crd_convert_zerocopy_body")
+    implicit none
+    type(c_ptr), value :: ctx
+
+    type(t_crd_convert_zerocopy_ctx), pointer :: c
+    type(s_molecule_c), pointer :: molecule_c
+    character(kind=c_char), pointer :: trj_filenames(:)
     integer(c_int), pointer :: sel_idx_f(:), fit_idx_f(:), cen_idx_f(:)
     integer(c_int), pointer :: frame_counts_f(:)
     real(c_double), pointer :: center_coord_f(:)
     type(c_ptr), pointer :: coords_ptrs_f(:), pbc_box_ptrs_f(:)
-    integer(c_int) :: grc
 
-    call error_init(err)
+    call c_f_pointer(ctx, c)
+    call c_f_pointer(c%molecule_ptr, molecule_c)
+    call c_f_pointer(c%trj_filenames_ptr, trj_filenames, &
+                     [c%n_trj_files * c%filename_len])
 
-    ! Guard the conversion: a missing/unreadable trajectory calls error_msg ->
-    ! exit(1) in CLI mode, which would kill the Python process.
-    grc = fi_error_guard_run(c_funloc(run_body))
-    if (grc /= 0) call error_from_pending(err)
+    call c2f_s_molecule(molecule_c, c%f_molecule)
 
-    call error_finish_to_c(err, status, msg, msglen)
+    ! Get Fortran pointers to C arrays
+    call c_f_pointer(c%selected_indices, sel_idx_f, [c%n_selected])
+    call c_f_pointer(c%frame_counts, frame_counts_f, [c%n_trj_files])
+    call c_f_pointer(c%coords_ptrs, coords_ptrs_f, [c%n_trj_files])
+    call c_f_pointer(c%pbc_box_ptrs, pbc_box_ptrs_f, [c%n_trj_files])
+    call c_f_pointer(c%center_coord, center_coord_f, [3])
 
-    call dealloc_molecules_all(f_molecule)
+    if (c%n_fitting > 0) then
+      call c_f_pointer(c%fitting_indices, fit_idx_f, [c%n_fitting])
+    else
+      nullify(fit_idx_f)
+    end if
 
-  contains
-    subroutine run_body() bind(C)
-      call c2f_s_molecule(molecule_c, f_molecule)
+    if (c%n_centering > 0) then
+      call c_f_pointer(c%centering_indices, cen_idx_f, [c%n_centering])
+    else
+      nullify(cen_idx_f)
+    end if
 
-      ! Get Fortran pointers to C arrays
-      call c_f_pointer(selected_indices, sel_idx_f, [n_selected])
-      call c_f_pointer(frame_counts, frame_counts_f, [n_trj_files])
-      call c_f_pointer(coords_ptrs, coords_ptrs_f, [n_trj_files])
-      call c_f_pointer(pbc_box_ptrs, pbc_box_ptrs_f, [n_trj_files])
-      call c_f_pointer(center_coord, center_coord_f, [3])
-
-      if (n_fitting > 0) then
-        call c_f_pointer(fitting_indices, fit_idx_f, [n_fitting])
-      else
-        nullify(fit_idx_f)
-      end if
-
-      if (n_centering > 0) then
-        call c_f_pointer(centering_indices, cen_idx_f, [n_centering])
-      else
-        nullify(cen_idx_f)
-      end if
-
-      ! Call the implementation
-      call convert_zerocopy(f_molecule, &
-                            trj_filenames, n_trj_files, filename_len, &
-                            trj_format, trj_type, &
-                            sel_idx_f, n_selected, &
-                            fitting_method, fit_idx_f, n_fitting, mass_weighted, &
-                            do_centering, cen_idx_f, n_centering, center_coord_f, &
-                            pbcc_mode, ana_period, &
-                            frame_counts_f, &
-                            coords_ptrs_f, pbc_box_ptrs_f, &
-                            err)
-    end subroutine run_body
-  end subroutine crd_convert_zerocopy_c
+    ! Call the implementation
+    call convert_zerocopy(c%f_molecule, &
+                          trj_filenames, c%n_trj_files, c%filename_len, &
+                          c%trj_format, c%trj_type, &
+                          sel_idx_f, c%n_selected, &
+                          c%fitting_method, fit_idx_f, c%n_fitting, &
+                          c%mass_weighted, &
+                          c%do_centering, cen_idx_f, c%n_centering, &
+                          center_coord_f, &
+                          c%pbcc_mode, c%ana_period, &
+                          frame_counts_f, &
+                          coords_ptrs_f, pbc_box_ptrs_f, &
+                          c%err)
+  end subroutine crd_convert_zerocopy_body
 
   !======1=========2=========3=========4=========5=========6=========7=========8
   !

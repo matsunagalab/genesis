@@ -28,13 +28,30 @@ module pmf_c_mod
   use constants_mod
   implicit none
 
+  !> State shared between pmf_analysis_c and its guarded body
+  !! pmf_analysis_body (see run_guarded in error_mod).
+  type :: t_pmf_analysis_ctx
+    ! inputs
+    type(c_ptr) :: ctrl_text_ptr = c_null_ptr
+    integer     :: ctrl_len = 0
+    ! outputs (pmf_f is handed to Python on success)
+    real(wp), pointer :: pmf_f(:,:) => null()
+    integer :: n_out1 = 0
+    integer :: n_out2 = 0
+    ! error state
+    type(s_error) :: err
+  end type t_pmf_analysis_ctx
+
+  private :: t_pmf_analysis_ctx
+  private :: pmf_analysis_body
+
 contains
 
   subroutine pmf_analysis_c(ctrl_text, ctrl_len, result_pmf, n_out1, n_out2, &
                             status, msg, msglen) &
         bind(C, name="pmf_analysis_c")
     implicit none
-    character(kind=c_char), intent(in)    :: ctrl_text(*)
+    character(kind=c_char), intent(in), target :: ctrl_text(*)
     integer(c_int),         value         :: ctrl_len
     type(c_ptr),            intent(out)   :: result_pmf
     integer(c_int),         intent(out)   :: n_out1
@@ -43,33 +60,38 @@ contains
     character(kind=c_char), intent(out)   :: msg(*)
     integer(c_int),         value         :: msglen
 
-    real(wp), pointer :: pmf_f(:,:) => null()
+    type(t_pmf_analysis_ctx), target :: c
 
-    type(s_error) :: err
-    integer(c_int) :: grc
-
-    call error_init(err)
+    result_pmf = c_null_ptr
+    c%ctrl_text_ptr = c_loc(ctrl_text)
+    c%ctrl_len      = ctrl_len
 
     ! Run the analysis under the library-mode error guard so that a fatal
     ! error_msg (e.g. a missing cvfile) is turned into a catchable error
-    ! instead of aborting the host process.
-    grc = fi_error_guard_run(c_funloc(run_body))
-    if (grc /= 0) then
-      call error_from_pending(err)
-      call error_finish_to_c(err, status, msg, msglen)
-      return
-    end if
+    ! instead of aborting the host process (see run_guarded in error_mod).
+    call run_guarded(pmf_analysis_body, c, c%err, status, msg, msglen)
 
-    call error_finish_to_c(err, status, msg, msglen)
-    if (error_has(err)) return
+    n_out1 = c%n_out1
+    n_out2 = c%n_out2
+    if (error_has(c%err)) return
 
-    result_pmf = c_loc(pmf_f)
-  contains
-    subroutine run_body() bind(C)
-      call pmf_analysis_main( &
-          ctrl_text, ctrl_len, pmf_f, n_out1, n_out2, err)
-    end subroutine run_body
+    if (associated(c%pmf_f)) result_pmf = c_loc(c%pmf_f)
   end subroutine pmf_analysis_c
+
+  !> Guarded body of pmf_analysis_c (see run_guarded in error_mod).
+  subroutine pmf_analysis_body(ctx) bind(C, name="pmf_analysis_body")
+    implicit none
+    type(c_ptr), value :: ctx
+
+    type(t_pmf_analysis_ctx), pointer :: c
+    character(kind=c_char), pointer :: ctrl_text(:)
+
+    call c_f_pointer(ctx, c)
+    call c_f_pointer(c%ctrl_text_ptr, ctrl_text, [c%ctrl_len])
+
+    call pmf_analysis_main( &
+        ctrl_text, c%ctrl_len, c%pmf_f, c%n_out1, c%n_out2, c%err)
+  end subroutine pmf_analysis_body
 
   subroutine pmf_analysis_main( &
           ctrl_text, ctrl_len, result_pmf, n_out1, n_out2, err)

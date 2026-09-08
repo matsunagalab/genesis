@@ -31,6 +31,27 @@ module mbar_c_mod
   use constants_mod
   implicit none
 
+  !> State shared between mbar_analysis_c and its guarded body
+  !! mbar_analysis_body (see run_guarded in error_mod).
+  type :: t_mbar_analysis_ctx
+    ! inputs
+    type(c_ptr) :: ctrl_text_ptr = c_null_ptr
+    integer     :: ctrl_len = 0
+    logical     :: return_weights = .false.
+    ! outputs (fene_f / weights_f are handed to Python on success)
+    real(wp), pointer :: fene_f(:,:) => null()
+    real(wp), pointer :: weights_f(:,:) => null()
+    integer :: n_replica = 0
+    integer :: n_blocks = 0
+    integer :: n_weight_replica = 0
+    integer :: n_weight_step = 0
+    ! error state
+    type(s_error) :: err
+  end type t_mbar_analysis_ctx
+
+  private :: t_mbar_analysis_ctx
+  private :: mbar_analysis_body
+
  contains
   subroutine mbar_analysis_c(ctrl_text, ctrl_len, return_weights, result_fene, &
                              n_replica, n_blocks, result_weights, &
@@ -39,7 +60,7 @@ module mbar_c_mod
         bind(C, name="mbar_analysis_c")
     use conv_f_c_util
     implicit none
-    character(kind=c_char), intent(in) :: ctrl_text(*)
+    character(kind=c_char), intent(in), target :: ctrl_text(*)
     integer(c_int), value :: ctrl_len
     integer(c_int), value :: return_weights
     type(c_ptr), intent(out) :: result_fene
@@ -52,44 +73,44 @@ module mbar_c_mod
     character(kind=c_char),  intent(out) :: msg(*)
     integer(c_int),          value       :: msglen
 
+    type(t_mbar_analysis_ctx), target :: c
 
-    real(wp), pointer :: fene_f(:,:) => null()
-    real(wp), pointer :: weights_f(:,:) => null()
-
-    type(s_error) :: err
-    integer(c_int) :: grc
-
-    result_fene = c_null_ptr
+    result_fene    = c_null_ptr
     result_weights = c_null_ptr
-    n_replica = 0
-    n_blocks = 0
-    n_weight_replica = 0
-    n_weight_step = 0
+    c%ctrl_text_ptr  = c_loc(ctrl_text)
+    c%ctrl_len       = ctrl_len
+    c%return_weights = (return_weights /= 0)
 
-    call error_init(err)
-
-    ! Run under the library-mode error guard (see error_mod / fileio_data_.c)
+    ! Run under the library-mode error guard (see run_guarded in error_mod)
     ! so a fatal error_msg becomes a catchable error rather than exit(1).
-    grc = fi_error_guard_run(c_funloc(run_body))
-    if (grc /= 0) then
-      call error_from_pending(err)
-      call error_finish_to_c(err, status, msg, msglen)
-      return
-    end if
+    call run_guarded(mbar_analysis_body, c, c%err, status, msg, msglen)
 
-    call error_finish_to_c(err, status, msg, msglen)
-    if (error_has(err)) return
+    n_replica        = c%n_replica
+    n_blocks         = c%n_blocks
+    n_weight_replica = c%n_weight_replica
+    n_weight_step    = c%n_weight_step
+    if (error_has(c%err)) return
 
-    if (associated(fene_f)) result_fene = c_loc(fene_f)
-    if (associated(weights_f)) result_weights = c_loc(weights_f)
-  contains
-    subroutine run_body() bind(C)
-      call mbar_analysis_main( &
-          ctrl_text, ctrl_len, return_weights /= 0, &
-          fene_f, n_replica, n_blocks, weights_f, &
-          n_weight_replica, n_weight_step, err)
-    end subroutine run_body
+    if (associated(c%fene_f))    result_fene    = c_loc(c%fene_f)
+    if (associated(c%weights_f)) result_weights = c_loc(c%weights_f)
   end subroutine mbar_analysis_c
+
+  !> Guarded body of mbar_analysis_c (see run_guarded in error_mod).
+  subroutine mbar_analysis_body(ctx) bind(C, name="mbar_analysis_body")
+    implicit none
+    type(c_ptr), value :: ctx
+
+    type(t_mbar_analysis_ctx), pointer :: c
+    character(kind=c_char), pointer :: ctrl_text(:)
+
+    call c_f_pointer(ctx, c)
+    call c_f_pointer(c%ctrl_text_ptr, ctrl_text, [c%ctrl_len])
+
+    call mbar_analysis_main( &
+        ctrl_text, c%ctrl_len, c%return_weights, &
+        c%fene_f, c%n_replica, c%n_blocks, c%weights_f, &
+        c%n_weight_replica, c%n_weight_step, c%err)
+  end subroutine mbar_analysis_body
 
   subroutine mbar_analysis_main( &
           ctrl_text, ctrl_len, return_weights, result_fene, &

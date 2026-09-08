@@ -31,13 +31,30 @@ module wham_c_mod
   use constants_mod
   implicit none
 
+  !> State shared between wa_analysis_c and its guarded body wa_analysis_body
+  !! (see run_guarded in error_mod).
+  type :: t_wa_analysis_ctx
+    ! inputs
+    type(c_ptr) :: ctrl_text_ptr = c_null_ptr
+    integer     :: ctrl_len = 0
+    ! outputs (pmf_f is handed to Python on success)
+    real(wp), pointer :: pmf_f(:,:) => null()
+    integer :: n_bins = 0
+    integer :: n_bin_x = 0
+    ! error state
+    type(s_error) :: err
+  end type t_wa_analysis_ctx
+
+  private :: t_wa_analysis_ctx
+  private :: wa_analysis_body
+
 contains
   subroutine wa_analysis_c(ctrl_text, ctrl_len, result_pmf, n_bins, n_bin_x,    &
                            status, msg, msglen) &
         bind(C, name="wa_analysis_c")
     use conv_f_c_util
     implicit none
-    character(kind=c_char), intent(in) :: ctrl_text(*)
+    character(kind=c_char), intent(in), target :: ctrl_text(*)
     integer(c_int), value :: ctrl_len
     type(c_ptr), intent(out)    :: result_pmf
     integer(c_int), intent(out) :: n_bins
@@ -46,34 +63,38 @@ contains
     character(kind=c_char),  intent(out) :: msg(*)
     integer(c_int),          value       :: msglen
 
+    type(t_wa_analysis_ctx), target :: c
 
-    real(wp), pointer :: pmf_f(:,:) => null()
-
-    type(s_error) :: err
-    integer(c_int) :: grc
-
-    call error_init(err)
+    result_pmf = c_null_ptr
+    c%ctrl_text_ptr = c_loc(ctrl_text)
+    c%ctrl_len      = ctrl_len
 
     ! Run the analysis under the library-mode error guard so that a fatal
     ! error_msg (e.g. a missing cvfile) is turned into a catchable error
-    ! instead of aborting the host process.
-    grc = fi_error_guard_run(c_funloc(run_body))
-    if (grc /= 0) then
-      call error_from_pending(err)
-      call error_finish_to_c(err, status, msg, msglen)
-      return
-    end if
+    ! instead of aborting the host process (see run_guarded in error_mod).
+    call run_guarded(wa_analysis_body, c, c%err, status, msg, msglen)
 
-    call error_finish_to_c(err, status, msg, msglen)
-    if (error_has(err)) return
+    n_bins  = c%n_bins
+    n_bin_x = c%n_bin_x
+    if (error_has(c%err)) return
 
-    result_pmf = c_loc(pmf_f)
-  contains
-    subroutine run_body() bind(C)
-      call wa_analysis_main( &
-          ctrl_text, ctrl_len, pmf_f, n_bins, n_bin_x, err)
-    end subroutine run_body
+    if (associated(c%pmf_f)) result_pmf = c_loc(c%pmf_f)
   end subroutine wa_analysis_c
+
+  !> Guarded body of wa_analysis_c (see run_guarded in error_mod).
+  subroutine wa_analysis_body(ctx) bind(C, name="wa_analysis_body")
+    implicit none
+    type(c_ptr), value :: ctx
+
+    type(t_wa_analysis_ctx), pointer :: c
+    character(kind=c_char), pointer :: ctrl_text(:)
+
+    call c_f_pointer(ctx, c)
+    call c_f_pointer(c%ctrl_text_ptr, ctrl_text, [c%ctrl_len])
+
+    call wa_analysis_main( &
+        ctrl_text, c%ctrl_len, c%pmf_f, c%n_bins, c%n_bin_x, c%err)
+  end subroutine wa_analysis_body
 
   subroutine wa_analysis_main( &
           ctrl_text, ctrl_len, result_pmf, n_bins, n_bin_x, err)

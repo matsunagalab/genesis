@@ -829,9 +829,12 @@ contains
     select case(source%source_type)
 
     case(TRJ_SOURCE_FILE)
-      if (source%current_file > 0 .and. &
-          source%current_file <= size(source%trj_list%md_steps)) then
-        call close_trj(source%trj_file)
+      ! Nested so that a default-initialised source (trj_list => null()) can
+      ! be finalized safely: Fortran does not guarantee short-circuit .and.
+      if (source%current_file > 0 .and. associated(source%trj_list)) then
+        if (source%current_file <= size(source%trj_list%md_steps)) then
+          call close_trj(source%trj_file)
+        end if
       end if
       source%current_file = 0
       source%trj_list => null()

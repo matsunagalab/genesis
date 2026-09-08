@@ -32,6 +32,17 @@ jobs:
           make -j$(nproc)
           make install
 
+      - name: Check that the shared library does not need an executable stack
+        run: |
+          # A trampoline (internal-procedure callback) marks the library RWE and
+          # dlopen() then fails on glibc >= 2.41. See error_mod / run_guarded.
+          LIB=src/analysis/interface/python_interface/.libs/libpython_interface.so
+          readelf -lW "$LIB" | grep GNU_STACK
+          if readelf -lW "$LIB" | grep -q 'GNU_STACK.*RWE'; then
+            echo "::error::libpython_interface.so requires an executable stack"
+            exit 1
+          fi
+
       - name: Install Python package
         run: |
           pip install -e .
@@ -74,6 +85,43 @@ jobs:
       - name: Run ATDYN tests
         run: |
           python -m genepie.tests.test_atdyn
+
+  build-and-test-linux-glibc-2-41:
+    # glibc >= 2.41 refuses to dlopen() a library that requires an executable
+    # stack. This job builds on a current distribution and loads the library
+    # from Python, which is exactly what failed before the error guard used
+    # context pointers (see error_mod / run_guarded).
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:42
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          dnf install -y gcc gcc-gfortran lapack-devel blas-devel \
+            autoconf automake libtool make binutils git python3 python3-pip
+
+      - name: Build GENESIS
+        run: |
+          autoreconf -fi
+          ./configure --disable-mpi CC=gcc FC=gfortran \
+            LAPACK_LIBS="-llapack -lblas"
+          make -j$(nproc)
+          make install
+          readelf -lW src/analysis/interface/python_interface/.libs/libpython_interface.so | grep GNU_STACK
+
+      - name: Install Python package
+        run: |
+          python3 -m venv /opt/venv
+          /opt/venv/bin/pip install -e .
+
+      - name: Load the library and run guard-path tests
+        run: |
+          ldd --version | head -1
+          /opt/venv/bin/python -m genepie.tests.test_rmsd_lazy
+          /opt/venv/bin/python -m genepie.tests.test_crd_convert_lazy
+          /opt/venv/bin/python -m genepie.tests.test_error_handling
 
   build-and-test-macos:
     runs-on: macos-latest

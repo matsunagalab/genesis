@@ -35,6 +35,58 @@ module rmsd_c_mod
   public :: rmsd_analysis_fitting_c
   public :: rmsd_analysis_lazy_c
 
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
+  !  Type          t_rmsd_lazy_ctx
+  !> @brief        State shared between rmsd_analysis_lazy_c and its guarded
+  !!               body rmsd_analysis_lazy_body
+  !! @authors      Claude Code
+  !
+  !  The body runs under the library-mode error guard (fi_error_guard_run_ctx
+  !  in error_mod) and therefore has to be a module procedure: taking
+  !  c_funloc() of an internal procedure makes gfortran emit a trampoline on
+  !  the stack, which requires an executable stack and is rejected by dlopen()
+  !  on glibc >= 2.41. Everything the body needs is passed through this
+  !  context instead of host association, and every resource the body may
+  !  acquire lives here so that the wrapper can release it after the guard
+  !  returns, including after a longjmp.
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  type :: t_rmsd_lazy_ctx
+    ! inputs (copied from the bind(C) arguments)
+    character(MaxFilename) :: filename_f = ''
+    integer     :: trj_type = 0
+    integer     :: dcd_natom_expected = 0
+    type(c_ptr) :: source_selection_ptr = c_null_ptr
+    integer     :: n_source_selection = 0
+    type(c_ptr) :: mass_ptr = c_null_ptr
+    type(c_ptr) :: ref_coord_ptr = c_null_ptr
+    integer     :: n_atoms = 0
+    integer     :: ana_period = 1
+    type(c_ptr) :: fitting_idx_ptr = c_null_ptr
+    integer     :: n_fitting = 0
+    type(c_ptr) :: analysis_idx_ptr = c_null_ptr
+    integer     :: n_analysis = 0
+    integer     :: fitting_method = 0
+    integer     :: mass_weighted = 0
+    type(c_ptr) :: result_ptr = c_null_ptr
+    integer     :: result_size = 0
+    ! outputs (copied back to the bind(C) arguments by the wrapper)
+    integer     :: nstru_out = 0
+    integer     :: dcd_nframe_out = 0
+    integer     :: dcd_natom_out = 0
+    ! error state and resources released by the wrapper
+    type(s_error)        :: err
+    type(s_trj_source)   :: source
+    type(s_result_sink)  :: sink
+    integer, allocatable :: fitting_idx_copy(:)
+    integer, allocatable :: analysis_idx_copy(:)
+  end type t_rmsd_lazy_ctx
+
+  private :: t_rmsd_lazy_ctx
+  private :: rmsd_analysis_lazy_body
+
 contains
 
   !======1=========2=========3=========4=========5=========6=========7=========8
@@ -365,6 +417,10 @@ contains
   !> @brief        RMSD analysis with lazy DCD loading (memory efficient)
   !! @authors      Claude Code
   !
+  !  Thin bind(C) entry point: packs the arguments into a t_rmsd_lazy_ctx,
+  !  runs rmsd_analysis_lazy_body under the library-mode error guard, reports
+  !  the outcome to C and releases whatever the body acquired.
+  !
   !======1=========2=========3=========4=========5=========6=========7=========8
 
   subroutine rmsd_analysis_lazy_c(dcd_filename, filename_len, trj_type, &
@@ -408,130 +464,150 @@ contains
     integer(c_int), value :: msglen
 
     ! Local variables
-    type(s_error) :: err
-    type(s_trj_source) :: source
-    type(s_result_sink) :: sink
-    character(MaxFilename) :: filename_f
+    type(t_rmsd_lazy_ctx), target :: c
+
+    ! Hand every input to the guarded body through the context
+    call c_filename_to_fortran(dcd_filename, filename_len, c%filename_f)
+    c%trj_type             = trj_type
+    c%dcd_natom_expected   = dcd_natom_expected
+    c%source_selection_ptr = source_selection_ptr
+    c%n_source_selection   = n_source_selection
+    c%mass_ptr             = mass_ptr
+    c%ref_coord_ptr        = ref_coord_ptr
+    c%n_atoms              = n_atoms
+    c%ana_period           = ana_period
+    c%fitting_idx_ptr      = fitting_idx_ptr
+    c%n_fitting            = n_fitting
+    c%analysis_idx_ptr     = analysis_idx_ptr
+    c%n_analysis           = n_analysis
+    c%fitting_method       = fitting_method
+    c%mass_weighted        = mass_weighted
+    c%result_ptr           = result_ptr
+    c%result_size          = result_size
+
+    ! Run the body under the library-mode error guard: reading the DCD may
+    ! call error_msg -> exit(1) in CLI mode, which would kill the host Python
+    ! process. The body is a module procedure, so the callback needs neither
+    ! a trampoline nor an executable stack (see run_guarded in error_mod).
+    call run_guarded(rmsd_analysis_lazy_body, c, c%err, status, msg, msglen)
+
+    nstru_out      = c%nstru_out
+    dcd_nframe_out = c%dcd_nframe_out
+    dcd_natom_out  = c%dcd_natom_out
+
+    ! Release what the body acquired; this also runs after a longjmp, when
+    ! the body never reached its own end. The allocatable components of c are
+    ! freed automatically on return.
+    call finalize_sink(c%sink)
+    call finalize_source(c%source)
+
+  end subroutine rmsd_analysis_lazy_c
+
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
+  !  Subroutine    rmsd_analysis_lazy_body
+  !> @brief        Guarded body of rmsd_analysis_lazy_c
+  !! @authors      Claude Code
+  !! @param[in]    ctx : C pointer to the caller's t_rmsd_lazy_ctx
+  !
+  !  Reports failures only through c%err; the wrapper converts them to the C
+  !  status/message pair and releases the resources recorded in the context.
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  subroutine rmsd_analysis_lazy_body(ctx) bind(C, name="rmsd_analysis_lazy_body")
+    implicit none
+
+    ! Arguments
+    type(c_ptr), value :: ctx
+
+    ! Local variables
+    type(t_rmsd_lazy_ctx), pointer :: c
     real(wp), pointer :: mass_f(:)
     real(wp), pointer :: ref_coord_f(:,:)
     real(wp), pointer :: result_f(:)
     integer, pointer :: fitting_idx_f(:)
     integer, pointer :: analysis_idx_f(:)
     integer, pointer :: source_selection_f(:)
-    integer, allocatable :: fitting_idx_copy(:)
-    integer, allocatable :: analysis_idx_copy(:)
     logical :: use_mass
     integer :: nstru, n_fitting_use, fitting_method_use, init_status
-    integer(c_int) :: grc
 
-    ! Guard the whole body: init_source_lazy_dcd opens the DCD file, and a
-    ! missing/unreadable file calls error_msg -> exit(1) in CLI mode, which
-    ! would kill the host Python process.
-    grc = fi_error_guard_run(c_funloc(run_body))
-    if (grc /= 0) then
-      call error_from_pending(err)
-      call error_to_c(err, status, msg, msglen)
-      call finalize_sink(sink)
-      call finalize_source(source)
-      if (allocated(analysis_idx_copy)) deallocate(analysis_idx_copy)
-      if (allocated(fitting_idx_copy)) deallocate(fitting_idx_copy)
-    end if
-    return
-
-  contains
-    subroutine run_body() bind(C)
-
-    ! Initialize
-    call error_init(err)
-    status = 0
-    nstru_out = 0
-    dcd_nframe_out = 0
-    dcd_natom_out = 0
-
-    ! Convert C string to Fortran string
-    call c_filename_to_fortran(dcd_filename, filename_len, filename_f)
+    call c_f_pointer(ctx, c)
 
     ! Validate inputs
-    if (n_analysis <= 0) then
-      call error_set(err, ERROR_INVALID_PARAM, &
+    if (c%n_analysis <= 0) then
+      call error_set(c%err, ERROR_INVALID_PARAM, &
                      "rmsd_analysis_lazy_c: n_analysis must be positive")
-      call error_to_c(err, status, msg, msglen)
       return
     end if
 
-    if (n_source_selection /= n_atoms .or. &
-        .not. c_associated(source_selection_ptr)) then
-      call error_set(err, ERROR_INVALID_PARAM, &
+    if (c%n_source_selection /= c%n_atoms .or. &
+        .not. c_associated(c%source_selection_ptr)) then
+      call error_set(c%err, ERROR_INVALID_PARAM, &
                      "rmsd_analysis_lazy_c: invalid source selection")
-      call error_to_c(err, status, msg, msglen)
       return
     end if
 
-    if (.not. c_associated(mass_ptr)) then
-      call error_set(err, ERROR_INVALID_PARAM, &
+    if (.not. c_associated(c%mass_ptr)) then
+      call error_set(c%err, ERROR_INVALID_PARAM, &
                      "rmsd_analysis_lazy_c: mass_ptr is null")
-      call error_to_c(err, status, msg, msglen)
       return
     end if
 
-    if (.not. c_associated(ref_coord_ptr)) then
-      call error_set(err, ERROR_INVALID_PARAM, &
+    if (.not. c_associated(c%ref_coord_ptr)) then
+      call error_set(c%err, ERROR_INVALID_PARAM, &
                      "rmsd_analysis_lazy_c: ref_coord_ptr is null")
-      call error_to_c(err, status, msg, msglen)
       return
     end if
 
-    if (.not. c_associated(result_ptr)) then
-      call error_set(err, ERROR_INVALID_PARAM, &
+    if (.not. c_associated(c%result_ptr)) then
+      call error_set(c%err, ERROR_INVALID_PARAM, &
                      "rmsd_analysis_lazy_c: result_ptr is null")
-      call error_to_c(err, status, msg, msglen)
       return
     end if
 
-    if (result_size <= 0) then
-      call error_set(err, ERROR_INVALID_PARAM, &
+    if (c%result_size <= 0) then
+      call error_set(c%err, ERROR_INVALID_PARAM, &
                      "rmsd_analysis_lazy_c: result_size must be positive")
-      call error_to_c(err, status, msg, msglen)
       return
     end if
 
     ! Create zero-copy views of arrays from Python
-    call C_F_POINTER(mass_ptr, mass_f, [n_atoms])
-    call C_F_POINTER(ref_coord_ptr, ref_coord_f, [3, n_atoms])
-    call C_F_POINTER(result_ptr, result_f, [result_size])
-    call C_F_POINTER(source_selection_ptr, source_selection_f, &
-                     [n_source_selection])
+    call C_F_POINTER(c%mass_ptr, mass_f, [c%n_atoms])
+    call C_F_POINTER(c%ref_coord_ptr, ref_coord_f, [3, c%n_atoms])
+    call C_F_POINTER(c%result_ptr, result_f, [c%result_size])
+    call C_F_POINTER(c%source_selection_ptr, source_selection_f, &
+                     [c%n_source_selection])
     if (any(source_selection_f < 1) .or. &
-        any(source_selection_f > dcd_natom_expected)) then
-      call error_set(err, ERROR_INVALID_PARAM, &
+        any(source_selection_f > c%dcd_natom_expected)) then
+      call error_set(c%err, ERROR_INVALID_PARAM, &
                      "rmsd_analysis_lazy_c: source selection out of range")
-      call error_to_c(err, status, msg, msglen)
       return
     end if
 
     ! Convert analysis indices
-    call C_F_POINTER(analysis_idx_ptr, analysis_idx_f, [n_analysis])
-    allocate(analysis_idx_copy(n_analysis))
-    analysis_idx_copy(:) = analysis_idx_f(:)
+    call C_F_POINTER(c%analysis_idx_ptr, analysis_idx_f, [c%n_analysis])
+    allocate(c%analysis_idx_copy(c%n_analysis))
+    c%analysis_idx_copy(:) = analysis_idx_f(:)
 
     ! Check for fitting and prepare fitting indices
-    if (n_fitting > 0 .and. fitting_method > 0 .and. &
-        c_associated(fitting_idx_ptr)) then
-      call C_F_POINTER(fitting_idx_ptr, fitting_idx_f, [n_fitting])
-      allocate(fitting_idx_copy(n_fitting))
-      fitting_idx_copy(:) = fitting_idx_f(:)
-      n_fitting_use = n_fitting
-      fitting_method_use = fitting_method
+    if (c%n_fitting > 0 .and. c%fitting_method > 0 .and. &
+        c_associated(c%fitting_idx_ptr)) then
+      call C_F_POINTER(c%fitting_idx_ptr, fitting_idx_f, [c%n_fitting])
+      allocate(c%fitting_idx_copy(c%n_fitting))
+      c%fitting_idx_copy(:) = fitting_idx_f(:)
+      n_fitting_use = c%n_fitting
+      fitting_method_use = c%fitting_method
     else
       ! No fitting - create dummy array
-      allocate(fitting_idx_copy(1))
-      fitting_idx_copy(1) = 1
+      allocate(c%fitting_idx_copy(1))
+      c%fitting_idx_copy(1) = 1
       n_fitting_use = 0
       fitting_method_use = FittingMethodNO
     end if
 
     ! Convert mass_weighted to logical
-    use_mass = (mass_weighted /= 0)
+    use_mass = (c%mass_weighted /= 0)
 
     ! Set MPI variables for analysis
     my_city_rank = 0
@@ -542,53 +618,41 @@ contains
     write(MsgOut,'(A)') '[STEP1] Initialize Lazy DCD Source'
     write(MsgOut,'(A)') ' '
 
-    call init_source_lazy_dcd(source, trim(filename_f), trj_type, ana_period, &
-                              source_selection_f, n_source_selection, init_status)
+    call init_source_lazy_dcd(c%source, trim(c%filename_f), c%trj_type, &
+                              c%ana_period, source_selection_f, &
+                              c%n_source_selection, init_status)
     if (init_status /= 0) then
-      call error_set(err, init_status, &
+      call error_set(c%err, init_status, &
                      "rmsd_analysis_lazy_c: unable to initialize DCD source")
-      call error_to_c(err, status, msg, msglen)
-      deallocate(analysis_idx_copy)
-      deallocate(fitting_idx_copy)
       return
     end if
 
-    ! Return DCD info
-    dcd_nframe_out = source%dcd_nframe
-    dcd_natom_out = source%dcd_natom
+    ! Return DCD info (also on the atom-count error below)
+    c%dcd_nframe_out = c%source%dcd_nframe
+    c%dcd_natom_out  = c%source%dcd_natom
 
     ! Check atom count
-    if (source%dcd_natom /= dcd_natom_expected) then
-      call error_set(err, ERROR_ATOM_COUNT, &
+    if (c%source%dcd_natom /= c%dcd_natom_expected) then
+      call error_set(c%err, ERROR_ATOM_COUNT, &
                      "rmsd_analysis_lazy_c: atom count mismatch")
-      call error_to_c(err, status, msg, msglen)
-      call finalize_source(source)
-      deallocate(analysis_idx_copy)
-      deallocate(fitting_idx_copy)
       return
     end if
 
     ! Initialize sink (array mode)
-    call init_sink_array(sink, result_f, result_size)
+    call init_sink_array(c%sink, result_f, c%result_size)
 
     ! Run unified RMSD analysis (lazy loading via source abstraction)
     write(MsgOut,'(A)') '[STEP2] RMSD Analysis (lazy loading, unified)'
     write(MsgOut,'(A)') ' '
 
-    call analyze_rmsd_unified(source, sink, ref_coord_f, mass_f, n_atoms, &
-                              fitting_idx_copy, n_fitting_use, &
-                              analysis_idx_copy, n_analysis, &
+    call analyze_rmsd_unified(c%source, c%sink, ref_coord_f, mass_f, &
+                              c%n_atoms, &
+                              c%fitting_idx_copy, n_fitting_use, &
+                              c%analysis_idx_copy, c%n_analysis, &
                               fitting_method_use, use_mass, nstru)
 
-    nstru_out = nstru
+    c%nstru_out = nstru
 
-    ! Cleanup
-    call finalize_sink(sink)
-    call finalize_source(source)
-    deallocate(analysis_idx_copy)
-    deallocate(fitting_idx_copy)
-
-    end subroutine run_body
-  end subroutine rmsd_analysis_lazy_c
+  end subroutine rmsd_analysis_lazy_body
 
 end module rmsd_c_mod

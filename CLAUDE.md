@@ -53,6 +53,11 @@ the source of truth:
   possible.
 - Respect ownership in `STrajectories`: never free NumPy-owned buffers through
   Fortran or leak Fortran-owned buffers.
+- `bind(C)` wrappers run their work through `run_guarded` in `error_mod` with
+  a context derived type; the guarded body must be a module procedure. Never
+  take `c_funloc` of an internal procedure: the trampoline needs an executable
+  stack, which `dlopen` rejects on glibc 2.41+. See the wrapper skeleton in
+  `src/analysis/interface/python_interface/README.md`.
 - Validate paths, enums, dimensions, sizes, and contiguity before crossing the
   language boundary. Map Fortran status/message outputs through
   `exceptions.py`; do not replace typed errors with generic exceptions.

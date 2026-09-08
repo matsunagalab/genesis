@@ -1655,6 +1655,7 @@ if test x"${FC_ACT}" = x"gfortran"; then
   AC_DEFINE(__GFORTRAN__, 1, [defined if GCC gfortran compiler is used.])
   DEFINED_VARIABLES+=" -D__GFORTRAN__"
 fi
+AM_CONDITIONAL(GFORTRAN, test x"${FC_ACT}" = x"gfortran")
 
 ARFLAGS=""
 AC_SUBST(ARFLAGS)

@@ -93,6 +93,13 @@ libpython_interface_la_LIBADD = \
 		$(MPI_FORTRAN_LIBS)
 
 libpython_interface_la_FCFLAGS = $(FCFLAGS) $(PYTHON_CPPFLAGS)
+# The error guard (error_mod / run_guarded) hands C function pointers to
+# Fortran procedures. An internal (contains) procedure there would need a
+# trampoline, i.e. an executable stack, which dlopen() rejects on glibc >= 2.41.
+# Make gfortran fail the build instead of silently emitting one.
+if GFORTRAN
+libpython_interface_la_FCFLAGS += -Werror=trampolines
+endif
 
 # Add these lines
 CCLD = $(FC)
