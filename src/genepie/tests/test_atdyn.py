@@ -293,3 +293,22 @@ def test_atdyn_md_reports_genesis_errors(tmp_path):
     with pytest.raises(GenesisFortranError, match="does not exist"):
         genesis_exe.run_atdyn_md_isolated(**_bpti_md_kwargs(str(test_dir)))
 
+
+def test_atdyn_md_grotop_long_path(tmp_path):
+    """A GROMACS topology path longer than 100 characters must be usable.
+
+    ``input_grotop`` split the ``grotopfile`` value into 100-character strings,
+    so a longer absolute path was silently truncated and the run died with
+    "Open_file> File ... does not exist". Mirror the regression-test layout
+    under a long temporary path; ``param/`` is a symlink so the relative
+    includes in bpti.top still resolve.
+    """
+    tail = os.path.join("build", "bpti", "bpti.top")
+    pad = "long_path_" + "x" * max(1, 110 - len(str(tmp_path)) - len(tail) - 2)
+    root = tmp_path / pad
+    test_dir = _copy_bpti_inputs(root / "build" / "bpti")
+    os.symlink(ATDYN_PARAM_ROOT, root / "param")
+    assert len(str(test_dir / "bpti.top")) > 100
+
+    result = genesis_exe.run_atdyn_md_isolated(**_bpti_md_kwargs(str(test_dir)))
+    assert result.energies[0, 0] < 0, "total energy should be negative"

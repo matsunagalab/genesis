@@ -878,7 +878,9 @@ contains
     integer                  :: ierr
     character(MaxLine)       :: error
 
-    character(100), allocatable :: strs(:)
+    ! MaxFilename, not a short fixed width: a longer path was silently
+    ! truncated here and the open then failed with a misleading message.
+    character(MaxFilename), allocatable :: strs(:)
 
     ! parse filename string
     !
