@@ -15,7 +15,6 @@ from ..s_molecule import SMolecule
 from ..s_trajectories import STrajectories
 from .. import ctrl_files
 from .. import c2py_util
-from ..output_capture import suppress_stdout_capture_stderr
 from ..exceptions import GenesisValidationError
 from .._fortran import (
     ctrl_to_bytes,
@@ -73,9 +72,7 @@ def msd_analysis(
                     )
 
             ctrl_bytes, ctrl_len = ctrl_to_bytes(ctrl)
-            # ma_analysis_c predates the status/msg convention, so failures can
-            # only be detected from the returned sizes.
-            with suppress_stdout_capture_stderr():
+            with fortran_status() as (status, msgbuf, msglen):
                 LibGenesis().lib.ma_analysis_c(
                         ctypes.byref(mol_c),
                         ctypes.byref(trajs.get_c_obj()),
@@ -85,6 +82,9 @@ def msd_analysis(
                         ctypes.byref(result_msd_c),
                         ctypes.byref(num_analysis_mols_c),
                         ctypes.byref(num_delta_c),
+                        ctypes.byref(status),
+                        msgbuf,
+                        ctypes.c_int(msglen),
                         )
         result_msd = c2py_util.conv_double_ndarray(
             result_msd_c, [num_delta_c.value, num_analysis_mols_c.value])

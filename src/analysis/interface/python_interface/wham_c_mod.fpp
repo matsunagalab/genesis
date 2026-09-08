@@ -16,7 +16,7 @@ module wham_c_mod
   use, intrinsic :: iso_c_binding
   use s_molecule_c_mod
   use s_trajectories_c_mod
-  use wham_impl_mod
+  use wa_analyze_mod
 
   use wa_control_mod
   use wa_option_str_mod
@@ -46,7 +46,6 @@ module wham_c_mod
   end type t_wa_analysis_ctx
 
   private :: t_wa_analysis_ctx
-  private :: wa_analysis_body
 
 contains
   subroutine wa_analysis_c(ctrl_text, ctrl_len, result_pmf, n_bins, n_bin_x,    &
@@ -106,54 +105,79 @@ contains
     integer,           intent(out) :: n_bin_x
     type(s_error),                   intent(inout) :: err
 
-
     ! local variables
     type(s_ctrl_data)      :: ctrl_data
     type(s_option)         :: option
     type(s_input)          :: input
     type(s_output)         :: output
     type(s_molecule)       :: molecule
-
+    type(s_pmf), allocatable :: pmf_m(:)
+    real(wp),    allocatable :: grid(:), center(:)
+    integer                :: ncol, nbin, nbin_x, nbin_y, ibin, ibin_x, ibin_y, j
 
     my_city_rank = 0
     nproc_city   = 1
     main_rank    = .true.
 
+    nullify(result_pmf)
+    n_bins  = 0
+    n_bin_x = 0
 
-    ! [Step1] Read control file
-    !
     write(MsgOut,'(A)') '[STEP1] Read Control Parameters for Analysis'
     write(MsgOut,'(A)') ' '
-
     call control_from_string(ctrl_text, ctrl_len, ctrl_data)
 
-
-    ! [Step2] Set relevant variables and structures 
-    !
     write(MsgOut,'(A)') '[STEP2] Set Relevant Variables and Structures'
     write(MsgOut,'(A)') ' '
-
     call setup(ctrl_data, molecule, option, input, output)
 
+    if (.not. option%check_only) then
 
-    ! [Step3] Analyze trajectory
-    !
-    write(MsgOut,'(A)') '[STEP3] Analysis trajectory files'
-    write(MsgOut,'(A)') ' '
+      write(MsgOut,'(A)') '[STEP3] Analysis trajectory files'
+      write(MsgOut,'(A)') ' '
+      call analyze_wham_unified(molecule, input, option, pmf_m)
 
-    ! call analyze(molecule, s_trajes_c, ana_period, input, output, option)
-    call analyze(molecule, input, output, option, result_pmf, n_bins, n_bin_x, err)
-    if (error_has(err)) return
+      ! Python layout, same values the CLI writes to pmffile
+      if (option%dimension == 1) then
+        call compute_grid_center(option, 1, grid, center)
+        nbin = size(center)
+        if (option%nblocks > 1) then
+          ncol = 2
+        else
+          ncol = 1
+        end if
+        n_bins  = nbin
+        n_bin_x = ncol + 1
+        allocate(result_pmf(n_bin_x, n_bins))
+        do ibin = 1, nbin
+          result_pmf(:, ibin) = [center(ibin), (pmf_m(j)%v(ibin), j=1,ncol)]
+        end do
+        deallocate(grid, center)
+      else
+        if (option%nblocks > 1) then
+          call error_set(err, ERROR_BLOCK_NOT_SUPP, &
+                         'Output_Wham> n-block is not supported in 2D')
+        else
+          nbin_x  = option%num_grids(1)-1
+          nbin_y  = option%num_grids(2)-1
+          n_bin_x = nbin_x
+          n_bins  = nbin_y
+          allocate(result_pmf(n_bin_x, n_bins))
+          do ibin_y = 1, nbin_y
+            result_pmf(:, ibin_y) = &
+                 [(pmf_m(1)%v((ibin_x-1)+(ibin_y-1)*nbin_x+1), ibin_x=1,nbin_x)]
+          end do
+        end if
+      end if
 
+    end if
 
-    ! [Step4] Deallocate memory
-    !
     write(MsgOut,'(A)') '[STEP4] Deallocate memory'
     write(MsgOut,'(A)') ' '
-
     call dealloc_option(option)
     call dealloc_molecules_all(molecule)
-end subroutine wa_analysis_main
+
+  end subroutine wa_analysis_main
 
   !======1=========2=========3=========4=========5=========6=========7=========8
   !

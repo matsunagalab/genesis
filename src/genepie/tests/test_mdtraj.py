@@ -1,36 +1,25 @@
-# --------------------------------------------
-if __name__ == "__main__" and __package__ is None:
-    import sys, pathlib
-    pkg_dir = pathlib.Path(__file__).resolve().parent
-    sys.path.insert(0, str(pkg_dir.parent.parent))
-    __package__ = "genepie.tests"
-# --------------------------------------------
-import unittest
-import mdtraj
+"""Round trips between STrajectories and mdtraj trajectories."""
 from ..s_trajectories import STrajectories
-from ..custom_test_case import CustomTestCase
+from .conftest import (
+    BPTI_DCD, BPTI_PDB, BPTI_PSF, assert_trajectories_close,
+    load_trajectories, requires_mdtraj,
+)
+
+pytestmark = requires_mdtraj
 
 
-class TestMDTraj(CustomTestCase):
+def test_from_mdtraj_trajectory():
+    import mdtraj
 
-    def test_from_mdtraj_trajectory(self):
-        mdt = mdtraj.load(self.TRJ_PATH, top=self.PDB_PATH)
-
-        trj, mol = STrajectories.from_mdtraj_trajectory(mdt)
-        gtrajs, gmol = self.create_traj_by_genesis(
-                self.TRJ_PATH, pdb=self.PDB_PATH)
-        # New API returns List[STrajectories], not context manager
-        self.assertAlmostEqual(gtrajs[0], trj)
-
-    def test_to_mdtraj_trajectory(self):
-        strajs, smol = self.create_traj_by_genesis(
-                self.TRJ_PATH, pdb=self.PDB_PATH, psf=self.PSF_PATH)
-        # New API returns List[STrajectories], iterate directly
-        for t in strajs:
-            mdt = t.to_mdtraj_trajectory(smol)
-            gt, gm = STrajectories.from_mdtraj_trajectory(mdt)
-            self.assertAlmostEqual(t, gt)
+    mdt = mdtraj.load(str(BPTI_DCD), top=str(BPTI_PDB))
+    trj, _mol = STrajectories.from_mdtraj_trajectory(mdt)
+    gtrajs, _gmol = load_trajectories(BPTI_DCD, pdb=BPTI_PDB)
+    assert_trajectories_close(gtrajs[0], trj)
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_to_mdtraj_trajectory():
+    strajs, smol = load_trajectories(BPTI_DCD, pdb=BPTI_PDB, psf=BPTI_PSF)
+    for t in strajs:
+        mdt = t.to_mdtraj_trajectory(smol)
+        gt, _gm = STrajectories.from_mdtraj_trajectory(mdt)
+        assert_trajectories_close(t, gt)

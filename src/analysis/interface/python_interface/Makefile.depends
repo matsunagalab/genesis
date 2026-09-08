@@ -1,23 +1,17 @@
 atdyn_c_mod.lo: atdyn_c_mod.fpp error_mod.mod 
 atdyn_c_mod.mod: atdyn_c_mod.fpp atdyn_c_mod.lo
-avecrd_c_mod.lo: avecrd_c_mod.fpp s_trajectories_c_mod.mod s_molecule_c_mod.mod conv_f_c_util.mod error_mod.mod avecrd_impl_mod.mod 
+avecrd_c_mod.lo: avecrd_c_mod.fpp s_trajectories_c_mod.mod s_molecule_c_mod.mod conv_f_c_util.mod error_mod.mod internal_file_type_mod.mod 
 avecrd_c_mod.mod: avecrd_c_mod.fpp avecrd_c_mod.lo
-avecrd_impl.lo: avecrd_impl.fpp error_mod.mod internal_file_type_mod.mod s_trajectories_c_mod.mod 
-avecrd_impl_mod.mod: avecrd_impl.fpp avecrd_impl.lo
 conv_f_c_util.lo: conv_f_c_util.fpp  
 conv_f_c_util.mod: conv_f_c_util.fpp conv_f_c_util.lo
-crd_convert_c_mod.lo: crd_convert_c_mod.fpp s_trajectories_c_mod.mod s_molecule_c_mod.mod conv_f_c_util.mod error_mod.mod crd_convert_impl_mod.mod 
+crd_convert_c_mod.lo: crd_convert_c_mod.fpp s_trajectories_c_mod.mod s_molecule_c_mod.mod conv_f_c_util.mod error_mod.mod 
 crd_convert_c_mod.mod: crd_convert_c_mod.fpp crd_convert_c_mod.lo
-crd_convert_impl.lo: crd_convert_impl.fpp s_trajectories_c_mod.mod error_mod.mod 
-crd_convert_impl_mod.mod: crd_convert_impl.fpp crd_convert_impl.lo
 ctrl_c_mod.lo: ctrl_c_mod.fpp conv_f_c_util.mod 
 ctrl_c_mod.mod: ctrl_c_mod.fpp ctrl_c_mod.lo
 define_molecule.lo: define_molecule.fpp conv_f_c_util.mod s_molecule_c_mod.mod 
 define_molecule.mod: define_molecule.fpp define_molecule.lo
-diffusion_c_mod.lo: diffusion_c_mod.fpp error_mod.mod diffusion_impl_mod.mod 
+diffusion_c_mod.lo: diffusion_c_mod.fpp error_mod.mod 
 diffusion_c_mod.mod: diffusion_c_mod.fpp diffusion_c_mod.lo
-diffusion_impl.lo: diffusion_impl.fpp error_mod.mod 
-diffusion_impl_mod.mod: diffusion_impl.fpp diffusion_impl.lo
 drms_c_mod.lo: drms_c_mod.fpp error_mod.mod s_trajectories_c_mod.mod s_molecule_c_mod.mod 
 drms_c_mod.mod: drms_c_mod.fpp drms_c_mod.lo
 dynamic_string_mod.lo: dynamic_string_mod.fpp  
@@ -26,28 +20,18 @@ error_mod.lo: error_mod.fpp
 error_mod.mod: error_mod.fpp error_mod.lo
 export_molecule_c_mod.lo: export_molecule_c_mod.fpp error_mod.mod internal_file_type_mod.mod conv_f_c_util.mod s_molecule_c_mod.mod 
 export_molecule_c_mod.mod: export_molecule_c_mod.fpp export_molecule_c_mod.lo
-hb_c_mod.lo: hb_c_mod.fpp s_trajectories_c_mod.mod s_molecule_c_mod.mod conv_f_c_util.mod error_mod.mod hb_impl_mod.mod 
+hb_c_mod.lo: hb_c_mod.fpp s_trajectories_c_mod.mod s_molecule_c_mod.mod conv_f_c_util.mod error_mod.mod 
 hb_c_mod.mod: hb_c_mod.fpp hb_c_mod.lo
-hb_impl.lo: hb_impl.fpp error_mod.mod dynamic_string_mod.mod s_trajectories_c_mod.mod 
-hb_impl_mod.mod: hb_impl.fpp hb_impl.lo
 internal_file_type_mod.lo: internal_file_type_mod.fpp error_mod.mod dynamic_string_mod.mod 
 internal_file_type_mod.mod: internal_file_type_mod.fpp internal_file_type_mod.lo
-kmeans_c_mod.lo: kmeans_c_mod.fpp kmeans_impl_mod.mod s_trajectories_c_mod.mod s_molecule_c_mod.mod conv_f_c_util.mod error_mod.mod 
+kmeans_c_mod.lo: kmeans_c_mod.fpp internal_file_type_mod.mod s_trajectories_c_mod.mod s_molecule_c_mod.mod conv_f_c_util.mod error_mod.mod 
 kmeans_c_mod.mod: kmeans_c_mod.fpp kmeans_c_mod.lo
-kmeans_impl.lo: kmeans_impl.fpp error_mod.mod internal_file_type_mod.mod s_trajectories_c_mod.mod 
-kmeans_impl_mod.mod: kmeans_impl.fpp kmeans_impl.lo
-mbar_c_mod.lo: mbar_c_mod.fpp mbar_impl_mod.mod s_trajectories_c_mod.mod s_molecule_c_mod.mod conv_f_c_util.mod error_mod.mod 
+mbar_c_mod.lo: mbar_c_mod.fpp s_trajectories_c_mod.mod s_molecule_c_mod.mod conv_f_c_util.mod error_mod.mod 
 mbar_c_mod.mod: mbar_c_mod.fpp mbar_c_mod.lo
-mbar_impl.lo: mbar_impl.fpp error_mod.mod s_trajectories_c_mod.mod 
-mbar_impl_mod.mod: mbar_impl.fpp mbar_impl.lo
-msd_c_mod.lo: msd_c_mod.fpp s_trajectories_c_mod.mod s_molecule_c_mod.mod msd_impl_mod.mod conv_f_c_util.mod 
+msd_c_mod.lo: msd_c_mod.fpp s_trajectories_c_mod.mod s_molecule_c_mod.mod conv_f_c_util.mod error_mod.mod 
 msd_c_mod.mod: msd_c_mod.fpp msd_c_mod.lo
-msd_impl.lo: msd_impl.fpp s_trajectories_c_mod.mod 
-msd_impl_mod.mod: msd_impl.fpp msd_impl.lo
-pmf_c_mod.lo: pmf_c_mod.fpp error_mod.mod pmf_impl_mod.mod 
+pmf_c_mod.lo: pmf_c_mod.fpp error_mod.mod 
 pmf_c_mod.mod: pmf_c_mod.fpp pmf_c_mod.lo
-pmf_impl.lo: pmf_impl.fpp error_mod.mod 
-pmf_impl_mod.mod: pmf_impl.fpp pmf_impl.lo
 rg_c_mod.lo: rg_c_mod.fpp error_mod.mod s_trajectories_c_mod.mod s_molecule_c_mod.mod 
 rg_c_mod.mod: rg_c_mod.fpp rg_c_mod.lo
 rmsd_c_mod.lo: rmsd_c_mod.fpp error_mod.mod s_trajectories_c_mod.mod s_molecule_c_mod.mod 
@@ -58,11 +42,7 @@ s_trajectories_c_mod.lo: s_trajectories_c_mod.fpp
 s_trajectories_c_mod.mod: s_trajectories_c_mod.fpp s_trajectories_c_mod.lo
 selection_c_mod.lo: selection_c_mod.fpp error_mod.mod conv_f_c_util.mod s_molecule_c_mod.mod 
 selection_c_mod.mod: selection_c_mod.fpp selection_c_mod.lo
-trj_c_mod.lo: trj_c_mod.fpp error_mod.mod trj_impl_mod.mod s_trajectories_c_mod.mod 
+trj_c_mod.lo: trj_c_mod.fpp error_mod.mod s_trajectories_c_mod.mod 
 trj_c_mod.mod: trj_c_mod.fpp trj_c_mod.lo
-trj_impl.lo: trj_impl.fpp  
-trj_impl_mod.mod: trj_impl.fpp trj_impl.lo
-wham_c_mod.lo: wham_c_mod.fpp s_trajectories_c_mod.mod s_molecule_c_mod.mod conv_f_c_util.mod error_mod.mod wham_impl_mod.mod 
+wham_c_mod.lo: wham_c_mod.fpp s_trajectories_c_mod.mod s_molecule_c_mod.mod conv_f_c_util.mod error_mod.mod 
 wham_c_mod.mod: wham_c_mod.fpp wham_c_mod.lo
-wham_impl.lo: wham_impl.fpp error_mod.mod s_trajectories_c_mod.mod 
-wham_impl_mod.mod: wham_impl.fpp wham_impl.lo

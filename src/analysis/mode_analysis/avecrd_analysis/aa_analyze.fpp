@@ -16,7 +16,8 @@ module aa_analyze_mod
 
   use aa_option_str_mod
   use fitting_mod
-  use fileio_trj_mod
+  use trj_source_mod
+  use result_sink_mod
   use fitting_str_mod
   use trajectory_str_mod
   use output_str_mod
@@ -32,6 +33,7 @@ module aa_analyze_mod
 
   ! subroutines
   public  :: analyze
+  public  :: analyze_avecrd_unified
   private :: assign_mass
 
 contains
@@ -39,11 +41,12 @@ contains
   !======1=========2=========3=========4=========5=========6=========7=========8
   !
   !  Subroutine    analyze
-  !> @brief        run analyzing trajectories
-  !! @authors      NT
-  !! @param[inout] molecule   : molecule information
-  !! @param[inout] trj_list   : trajectory file list information
-  !! @param[inout] trajectory : trajectory information
+  !> @brief        run averaging trajectories (CLI driver)
+  !! @authors      TM
+  !! @param[inout] molecule   : molecule information (averaged on return)
+  !! @param[in]    trj_list   : trajectory file list information
+  !! @param[inout] trajectory : trajectory information (kept for the caller;
+  !!                            frames are read through trj_source_mod)
   !! @param[inout] fitting    : fitting information
   !! @param[inout] option     : option information
   !! @param[inout] output     : output information
@@ -53,20 +56,92 @@ contains
   subroutine analyze(molecule, trj_list, trajectory, fitting, option, output)
 
     ! formal arguments
-    type(s_molecule),        intent(inout) :: molecule
-    type(s_trj_list),        intent(inout) :: trj_list
-    type(s_trajectory),      intent(inout) :: trajectory
-    type(s_fitting),         intent(inout) :: fitting
-    type(s_option),          intent(inout) :: option
-    type(s_output),          intent(inout) :: output
+    type(s_molecule),         intent(inout) :: molecule
+    type(s_trj_list), target, intent(inout) :: trj_list
+    type(s_trajectory),       intent(inout) :: trajectory
+    type(s_fitting),          intent(inout) :: fitting
+    type(s_option),           intent(inout) :: option
+    type(s_output),           intent(inout) :: output
 
     ! local variables
-    type(s_trj_file)         :: trj_in
+    type(s_trj_source)       :: source
+    type(s_result_sink)      :: rms_sink
     type(s_pdb)              :: pdb_out
+
+
+    if (option%check_only) &
+      return
+
+    ! per-structure RMSD to the average (same layout as out_rmsd)
+    if (output%rmsfile /= '') &
+      call init_sink_file(rms_sink, output%rmsfile, '(i10,1x,f8.3)')
+
+    call init_source_file(source, trj_list, molecule%num_atoms)
+    call analyze_avecrd_unified(molecule, source, fitting, option, rms_sink)
+    call finalize_source(source)
+
+    ! output averaged structure
+    !
+    if (output%pdb_avefile /= '') then
+      call export_molecules(molecule, option%analysis_atom, pdb_out)
+      call output_pdb(output%pdb_avefile, pdb_out)
+      call dealloc_pdb_all(pdb_out)
+    end if
+
+    if (output%pdb_aftfile /= '') then
+      call export_molecules(molecule, fitting%fitting_atom, pdb_out)
+      call output_pdb(output%pdb_aftfile, pdb_out)
+      call dealloc_pdb_all(pdb_out)
+    end if
+
+    call finalize_sink(rms_sink)
+
+    ! Output summary
+    !
+    write(MsgOut,'(A)') 'Analyze> Detailed information in the output files'
+    write(MsgOut,'(A)') ''
+    write(MsgOut,'(A)') '  [rmsfile] ' // trim(output%rmsfile)
+    write(MsgOut,'(A)') '    Column 1: Snapshot index'
+    write(MsgOut,'(A)') '    Column 2: Root-mean-square deviation (RMSD) with respect'
+    write(MsgOut,'(A)') '              to the averaged structure (angstrom)'
+    write(MsgOut,'(A)') ''
+
+    return
+
+  end subroutine analyze
+
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
+  !  Subroutine    analyze_avecrd_unified
+  !> @brief        iterative average structure (shared by the CLI and the
+  !!               Python interface); the averaged coordinates replace
+  !!               molecule%atom_coord
+  !! @authors      TM, Claude Code
+  !! @param[inout] molecule : molecule information (averaged on return)
+  !! @param[inout] source   : trajectory source (file, memory or lazy DCD)
+  !! @param[inout] fitting  : fitting information
+  !! @param[in]    option   : option information
+  !! @param[inout] rms_sink : receives the RMSD of every structure to the
+  !!                          reference of the current iteration (inactive
+  !!                          sink: nothing is written)
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  subroutine analyze_avecrd_unified(molecule, source, fitting, option, rms_sink)
+
+    ! formal arguments
+    type(s_molecule),        intent(inout) :: molecule
+    type(s_trj_source),      intent(inout) :: source
+    type(s_fitting),         intent(inout) :: fitting
+    type(s_option),          intent(in)    :: option
+    type(s_result_sink),     intent(inout) :: rms_sink
+
+    ! local variables
+    type(s_trajectory)       :: trajectory
     real(wp)                 :: nstru_inv
-    integer                  :: natom, niter, ntraj, nstru
-    integer                  :: iatom, iiter, itraj, istep
-    integer                  :: rms_out, alloc_stat
+    integer                  :: natom, niter, nstru
+    integer                  :: iatom, iiter, alloc_stat, frame_status
+    logical                  :: write_rms
 
     real(wp), allocatable  :: av0_coord(:,:)
     real(wp), allocatable  :: ave_coord(:,:)
@@ -74,16 +149,11 @@ contains
     real(wp), allocatable  :: sqrt_mass(:)
 
 
-    if (option%check_only) &
-      return
-
     natom = molecule%num_atoms
     niter = option%num_iterations
-    ntraj = size(trj_list%md_steps)
+    write_rms = (rms_sink%file_open .or. associated(rms_sink%results)) &
+                .and. fitting%fitting_method /= FittingMethodNO
 
-
-    ! allocate memory
-    !
     allocate(sqrt_mass(natom),   &
              av0_coord(3,natom), &
              ave_coord(3,natom), &
@@ -91,11 +161,8 @@ contains
     if (alloc_stat /= 0) &
       call error_msg_alloc
 
-
-    ! prepare data
+    ! check mass
     !
-
-    ! setup mass
     if (fitting%mass_weight) then
       call assign_mass(molecule)
     end if
@@ -110,151 +177,96 @@ contains
       end do
     end if
 
-    ! setup initial average coordinates
+    ! initial reference structure (mass weighted)
+    !
     do iatom = 1, natom
       av0_coord(1:3,iatom) = molecule%atom_coord(1:3,iatom) * sqrt_mass(iatom)
     end do
 
-
-    ! open output file
-    !
-    if (output%rmsfile /= '') &
-      call open_file(rms_out, output%rmsfile, IOFileOutputNew)
-
-
-    ! analysis loop
+    ! iteration
     !
     do iiter = 1, niter
 
       write(MsgOut,*) 'Analyze> number of iterations = ',iiter
       write(MsgOut,*) ' '
 
-      ! reset average coordinates
       do iatom = 1, natom
         ave_coord(1:3,iatom) = 0.0_wp
       end do
 
       nstru = 0
+      call reset_source(source)
 
-      do itraj = 1, ntraj
+      do while (has_more_frames(source))
 
-        call open_trj(trj_in, &
-                      trj_list%filenames(itraj), &
-                      trj_list%trj_format,       &
-                      trj_list%trj_type, IOFileInput)
+        call get_next_frame(source, trajectory, frame_status)
+        if (frame_status /= 0) exit
 
-        do istep = 1, trj_list%md_steps(itraj)
+        nstru = nstru + 1
+        write(MsgOut,*) '      number of structures = ', nstru
 
-          call read_trj(trj_in, trajectory)
+        ! fitting
+        !
+        call run_fitting(fitting,             &
+                         molecule%atom_coord, &
+                         trajectory%coord,    &
+                         trajectory%coord)
 
-          if (mod(istep, trj_list%ana_periods(itraj)) == 0) then
-
-            nstru = nstru + 1
-            write(MsgOut,*) '      number of structures = ', nstru
-
-            ! geometrical fitting
-            !
-            call run_fitting(fitting,             &
-                             molecule%atom_coord, &
-                             trajectory%coord,    &
-                             trajectory%coord)
-
-            ! mass-weighted fitting
-            !
-            do iatom = 1, natom
-              trj_coord(1:3,iatom) = trajectory%coord(1:3,iatom)*sqrt_mass(iatom)
-            end do
-
-            call run_fitting(fitting,   &
-                             av0_coord, &
-                             trj_coord, &
-                             trj_coord)
-
-            if (output%rmsfile /= '') &
-              call out_rmsd(rms_out, nstru, fitting)
-
-            ! sum trajectory coordinates
-            !
-            do iatom = 1, natom
-              ave_coord(1:3,iatom) = ave_coord(1:3,iatom) + trj_coord(1:3,iatom)
-            end do
-
-          end if
-
+        ! mass weighted fitting
+        !
+        do iatom = 1, natom
+          trj_coord(1:3,iatom) = trajectory%coord(1:3,iatom)*sqrt_mass(iatom)
         end do
 
-        call close_trj(trj_in)
+        call run_fitting(fitting,   &
+                         av0_coord, &
+                         trj_coord, &
+                         trj_coord)
+
+        if (write_rms) &
+          call write_result_with_index(rms_sink, nstru, fitting%rmsd)
+
+        ! sum coordinates
+        !
+        do iatom = 1, natom
+          ave_coord(1:3,iatom) = ave_coord(1:3,iatom) + trj_coord(1:3,iatom)
+        end do
 
       end do
 
-      ! compute average coordinates
+      ! average
+      !
       nstru_inv = 1.0_wp / real(nstru, wp)
-
       do iatom = 1, natom
         ave_coord(1:3,iatom) = ave_coord(1:3,iatom) * nstru_inv
       end do
 
-      ! execute fitting
+      ! check the convergence
+      !
       call run_fitting(fitting,   &
                        av0_coord, &
                        ave_coord, &
                        ave_coord)
-
-      ! check convergence
       write(MsgOut,*) 'INFO> check the convergence: RMSD = ', fitting%rmsd
       write(MsgOut,*) ' '
 
-      ! copy average coordinates as initial
       do iatom = 1, natom
         av0_coord(1:3,iatom) = ave_coord(1:3,iatom)
       end do
 
     end do
 
-
-    ! output average coordinate data
+    ! averaged structure (remove the mass weight)
     !
     do iatom = 1, natom
       molecule%atom_coord(1:3, iatom) = ave_coord(1:3,iatom) / sqrt_mass(iatom)
     end do
 
-    if (output%pdb_avefile /= '') then
-      call export_molecules(molecule, option%analysis_atom, pdb_out)
-      call output_pdb(output%pdb_avefile, pdb_out)
-      call dealloc_pdb_all(pdb_out)
-    end if
-
-    if (output%pdb_aftfile /= '') then
-      call export_molecules(molecule, fitting%fitting_atom, pdb_out)
-      call output_pdb(output%pdb_aftfile, pdb_out)
-      call dealloc_pdb_all(pdb_out)
-    end if
-
-
-    ! close output file
-    !
-    if (output%rmsfile /= '') &
-      call close_file(rms_out)
-
-
-    ! Output summary
-    !
-    write(MsgOut,'(A)') 'Analyze> Detailed information in the output files'
-    write(MsgOut,'(A)') ''
-    write(MsgOut,'(A)') '  [rmsfile] ' // trim(output%rmsfile)
-    write(MsgOut,'(A)') '    Column 1: Snapshot index'
-    write(MsgOut,'(A)') '    Column 2: Root-mean-square deviation (RMSD) with respect'
-    write(MsgOut,'(A)') '              to the averaged structure (angstrom)'
-    write(MsgOut,'(A)') ''
-
-
-    ! deallocate memory
-    !
     deallocate(av0_coord, ave_coord, trj_coord, sqrt_mass)
 
     return
 
-  end subroutine analyze
+  end subroutine analyze_avecrd_unified
 
   !======1=========2=========3=========4=========5=========6=========7=========8
   !

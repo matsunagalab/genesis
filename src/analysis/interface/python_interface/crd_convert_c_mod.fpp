@@ -16,7 +16,7 @@ module crd_convert_c_mod
   use, intrinsic :: iso_c_binding
   use s_molecule_c_mod
   use s_trajectories_c_mod
-  use crd_convert_impl_mod
+  use cc_convert_mod
   use conv_f_c_util
 
   use cc_control_mod
@@ -38,21 +38,6 @@ module crd_convert_c_mod
   !  points are stored as C pointers and re-materialised in the body.
   !
   !======1=========2=========3=========4=========5=========6=========7=========8
-
-  type :: t_crd_convert_ctx
-    ! inputs
-    type(c_ptr) :: molecule_ptr = c_null_ptr    ! caller's s_molecule_c
-    type(c_ptr) :: ctrl_text_ptr = c_null_ptr
-    integer     :: ctrl_len = 0
-    ! outputs (copied back to the bind(C) arguments by the wrapper)
-    type(c_ptr)    :: s_trajes_c_array = c_null_ptr
-    integer(c_int) :: num_trajs = 0
-    type(c_ptr)    :: selected_atom_indices = c_null_ptr
-    integer(c_int) :: num_selected_atoms = 0
-    ! error state and resources released by the wrapper
-    type(s_error)    :: err
-    type(s_molecule) :: f_molecule
-  end type t_crd_convert_ctx
 
   type :: t_crd_convert_info_ctx
     ! inputs
@@ -98,233 +83,11 @@ module crd_convert_c_mod
     type(s_molecule) :: f_molecule
   end type t_crd_convert_zerocopy_ctx
 
-  private :: t_crd_convert_ctx, t_crd_convert_info_ctx, t_crd_convert_zerocopy_ctx
-  private :: crd_convert_body, crd_convert_info_body, crd_convert_zerocopy_body
+  private :: t_crd_convert_info_ctx, t_crd_convert_zerocopy_ctx
 
 contains
-  subroutine crd_convert_c( &
-          molecule, ctrl_text, ctrl_len, s_trajes_c_array, num_trajs, &
-          selected_atom_indices, num_selected_atoms, status, msg, msglen) &
-          bind(C, name="crd_convert_c")
-    implicit none
-    type(s_molecule_c), intent(inout), target :: molecule
-    character(kind=c_char), intent(in), target :: ctrl_text(*)
-    integer(c_int), value :: ctrl_len
-    type(c_ptr), intent(out) :: s_trajes_c_array
-    integer(c_int), intent(out) :: num_trajs
-    type(c_ptr), intent(out) :: selected_atom_indices
-    integer(c_int), intent(out) :: num_selected_atoms
-    integer(c_int),          intent(out) :: status
-    character(kind=c_char),  intent(out) :: msg(*)
-    integer(c_int),          value       :: msglen
-
-    type(t_crd_convert_ctx), target :: c
-
-    c%molecule_ptr  = c_loc(molecule)
-    c%ctrl_text_ptr = c_loc(ctrl_text)
-    c%ctrl_len      = ctrl_len
-
-    ! Run under the library-mode error guard: a missing trajectory file calls
-    ! error_msg -> exit(1) in CLI mode (see run_guarded in error_mod).
-    call run_guarded(crd_convert_body, c, c%err, status, msg, msglen)
-
-    ! The outputs keep their safe defaults (null / 0) when the body aborted,
-    ! so the C side never reads uninitialised values.
-    s_trajes_c_array      = c%s_trajes_c_array
-    num_trajs             = c%num_trajs
-    selected_atom_indices = c%selected_atom_indices
-    num_selected_atoms    = c%num_selected_atoms
-
-    call dealloc_molecules_all(c%f_molecule)
-  end subroutine crd_convert_c
-
-  !> Guarded body of crd_convert_c (see run_guarded in error_mod).
-  subroutine crd_convert_body(ctx) bind(C, name="crd_convert_body")
-    implicit none
-    type(c_ptr), value :: ctx
-
-    type(t_crd_convert_ctx), pointer :: c
-    type(s_molecule_c), pointer :: molecule
-    character(kind=c_char), pointer :: ctrl_text(:)
-
-    call c_f_pointer(ctx, c)
-    call c_f_pointer(c%molecule_ptr, molecule)
-    call c_f_pointer(c%ctrl_text_ptr, ctrl_text, [c%ctrl_len])
-
-    call c2f_s_molecule(molecule, c%f_molecule)
-    call crd_convert_main(c%f_molecule, ctrl_text, c%ctrl_len, &
-                          c%s_trajes_c_array, c%num_trajs, &
-                          c%selected_atom_indices, c%num_selected_atoms, &
-                          c%err)
-  end subroutine crd_convert_body
-
-  subroutine crd_convert_main(molecule, ctrl_text, ctrl_len, s_trajes_c_array, num_trajs, &
-                              selected_atom_indices, num_selected_atoms, err)
-    implicit none
-    type(s_molecule), intent(inout) :: molecule
-    character(kind=c_char), intent(in) :: ctrl_text(*)
-    integer, intent(in) :: ctrl_len
-    type(c_ptr), intent(out) :: s_trajes_c_array
-    integer(c_int), intent(out) :: num_trajs
-    type(c_ptr), intent(out) :: selected_atom_indices
-    integer(c_int), intent(out) :: num_selected_atoms
-    type(s_error),                   intent(inout) :: err
-    type(s_ctrl_data)      :: ctrl_data
-    type(s_trj_list)       :: trj_list
-    type(s_trajectory)     :: trajectory
-    type(s_fitting)        :: fitting
-    type(s_option)         :: option
-    type(s_output)         :: output
 
 
-    my_city_rank = 0
-    nproc_city   = 1
-    main_rank    = .true.
-
-
-    ! [Step1] Read control file
-    !
-    write(MsgOut,'(A)') '[STEP1] Read Control Parameters for Convert'
-    write(MsgOut,'(A)') ' '
-
-    call control_from_string(ctrl_text, ctrl_len, ctrl_data)
-
-
-    ! [Step2] Set relevant variables and structures
-    !
-    write(MsgOut,'(A)') '[STEP2] Set Relevant Variables and Structures'
-    write(MsgOut,'(A)') ' '
-
-    call setup(ctrl_data,  &
-               molecule,   &
-               trj_list,   &
-               trajectory, &
-               fitting,    &
-               option,     &
-               output)
-
-
-    ! [Step3] Convert trajectory files
-    !
-    write(MsgOut,'(A)') '[STEP3] Convert trajectory files'
-    write(MsgOut,'(A)') ' '
-
-    call convert(molecule,   &
-                 trj_list,   &
-                 trajectory, &
-                 fitting,    &
-                 option,     &
-                 output,     &
-                 s_trajes_c_array, &
-                 num_trajs,  &
-                 err)
-    if (error_has(err)) return
-
-    ! Extract selected atom indices from option%trjout_atom
-    call extract_selected_atom_indices(option%trjout_atom, selected_atom_indices, num_selected_atoms)
-
-
-    ! [Step4] Deallocate memory
-    !
-    write(MsgOut,'(A)') '[STEP4] Deallocate memory'
-    write(MsgOut,'(A)') ' '
-
-    call dealloc_option(option)
-    call dealloc_fitting(fitting)
-    call dealloc_trajectory(trajectory)
-    call dealloc_trj_list(trj_list)
-  end subroutine crd_convert_main
-
-  subroutine setup(ctrl_data,  &
-                   molecule,   &
-                   trj_list,   &
-                   trajectory, &
-                   fitting,    &
-                   option,     &
-                   output)
-    use cc_control_mod
-    use cc_option_mod
-    use cc_option_str_mod
-    use fitting_mod
-    use fitting_str_mod
-    use input_mod
-    use output_mod
-    use output_str_mod
-    use trajectory_mod
-    use trajectory_str_mod
-    use select_mod
-    use molecules_mod
-    use molecules_str_mod
-    use fileio_grocrd_mod
-    use fileio_grotop_mod
-    use fileio_ambcrd_mod
-    use fileio_prmtop_mod
-    use fileio_psf_mod
-    use fileio_pdb_mod
-    implicit none
-
-    ! formal arguments
-    type(s_ctrl_data),  intent(in)    :: ctrl_data
-    type(s_molecule),   intent(inout) :: molecule
-    type(s_trj_list),   intent(inout) :: trj_list
-    type(s_trajectory), intent(inout) :: trajectory
-    type(s_fitting),    intent(inout) :: fitting
-    type(s_option),     intent(inout) :: option
-    type(s_output),     intent(inout) :: output
-
-    ! local variables
-    type(s_psf)              :: psf
-    type(s_pdb)              :: ref, ref_out
-    type(s_prmtop)           :: prmtop
-    type(s_ambcrd)           :: ambcrd
-    type(s_grotop)           :: grotop
-    type(s_grocrd)           :: grocrd
-
-    call dealloc_psf_all(psf)
-    call dealloc_pdb_all(ref)
-    call dealloc_prmtop_all(prmtop)
-    call dealloc_ambcrd_all(ambcrd)
-    call dealloc_grotop_all(grotop)
-    call dealloc_grocrd_all(grocrd)
-
-
-    ! setup trajectory
-    !
-    call setup_trajectory(ctrl_data%trj_info, &
-                          molecule, trj_list, trajectory)
-
-    ! setup selection
-    !
-    call setup_selection(ctrl_data%sel_info, molecule)
-
-    ! setup fitting
-    !
-    call setup_fitting(ctrl_data%fit_info, ctrl_data%sel_info, &
-                       molecule, fitting)
-
-    ! setup option
-    !
-    call setup_option(ctrl_data%opt_info, ctrl_data%sel_info, &
-                      molecule, option)
-
-    ! setup output
-    !
-    call setup_output(ctrl_data%out_info, output)
-
-
-    ! export reference molecules
-    !
-    if (output%pdbfile /= '') then
-
-      call export_molecules(molecule, option%trjout_atom, ref_out)
-      call output_pdb(output%pdbfile, ref_out)
-      call dealloc_pdb_all(ref_out)
-
-    end if
-
-    return
-
-  end subroutine setup
 
   !======1=========2=========3=========4=========5=========6=========7=========8
   !
@@ -337,37 +100,6 @@ contains
   !
   !======1=========2=========3=========4=========5=========6=========7=========8
 
-  subroutine extract_selected_atom_indices(selatoms, selected_atom_indices, num_selected_atoms)
-    use, intrinsic :: iso_c_binding
-    use select_atoms_str_mod
-    use conv_f_c_util
-    use messages_mod
-    implicit none
-
-    ! formal arguments
-    type(s_selatoms), intent(in) :: selatoms
-    type(c_ptr), intent(out) :: selected_atom_indices
-    integer(c_int), intent(out) :: num_selected_atoms
-
-    ! local variables
-    integer :: i, nsel
-    integer(c_int), pointer :: c_array(:)
-
-    nsel = size(selatoms%idx)
-    num_selected_atoms = nsel
-
-    if (nsel > 0) then
-      ! Allocate C array using conv_f_c_util
-      selected_atom_indices = allocate_c_int_array(int(nsel, c_int))
-      call c_f_pointer(selected_atom_indices, c_array, [nsel])
-      do i = 1, nsel
-        c_array(i) = int(selatoms%idx(i), c_int)
-      end do
-    else
-      selected_atom_indices = c_null_ptr
-    end if
-
-  end subroutine extract_selected_atom_indices
 
   !======1=========2=========3=========4=========5=========6=========7=========8
   !
@@ -452,8 +184,9 @@ contains
     allocate(c%frame_counts(c%n_trj_files))
 
     ! Get trajectory info
-    call get_info(c%f_molecule, trj_filenames, c%n_trj_files, c%filename_len, &
-                  c%trj_format, c%trj_type, c%frame_counts, c%n_trajs, c%err)
+    call count_trj_frames(trj_filenames, c%n_trj_files, c%filename_len, &
+                          c%trj_format, c%trj_type, c%frame_counts)
+    c%n_trajs = c%n_trj_files
   end subroutine crd_convert_info_body
 
   !======1=========2=========3=========4=========5=========6=========7=========8
@@ -598,18 +331,17 @@ contains
     end if
 
     ! Call the implementation
-    call convert_zerocopy(c%f_molecule, &
-                          trj_filenames, c%n_trj_files, c%filename_len, &
-                          c%trj_format, c%trj_type, &
-                          sel_idx_f, c%n_selected, &
-                          c%fitting_method, fit_idx_f, c%n_fitting, &
-                          c%mass_weighted, &
-                          c%do_centering, cen_idx_f, c%n_centering, &
-                          center_coord_f, &
-                          c%pbcc_mode, c%ana_period, &
-                          frame_counts_f, &
-                          coords_ptrs_f, pbc_box_ptrs_f, &
-                          c%err)
+    call convert_to_arrays(c%f_molecule, &
+                           trj_filenames, c%n_trj_files, c%filename_len, &
+                           c%trj_format, c%trj_type, &
+                           sel_idx_f, c%n_selected, &
+                           c%fitting_method, fit_idx_f, c%n_fitting, &
+                           c%mass_weighted, &
+                           c%do_centering, cen_idx_f, c%n_centering, &
+                           center_coord_f, &
+                           c%pbcc_mode, c%ana_period, &
+                           frame_counts_f, &
+                           coords_ptrs_f, pbc_box_ptrs_f)
   end subroutine crd_convert_zerocopy_body
 
   !======1=========2=========3=========4=========5=========6=========7=========8

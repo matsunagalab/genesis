@@ -85,7 +85,6 @@ module rmsd_c_mod
   end type t_rmsd_lazy_ctx
 
   private :: t_rmsd_lazy_ctx
-  private :: rmsd_analysis_lazy_body
 
 contains
 

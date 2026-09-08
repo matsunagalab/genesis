@@ -1,11 +1,3 @@
-# --------------------------------------------
-if __name__ == "__main__" and __package__ is None:
-    import sys, pathlib
-    pkg_dir = pathlib.Path(__file__).resolve().parent
-    sys.path.insert(0, str(pkg_dir.parent.parent))
-    __package__ = "genepie.tests"
-# --------------------------------------------
-import os
 from .conftest import BPTI_PDB, BPTI_PSF, BPTI_DCD
 from ..s_molecule import SMolecule
 from .. import genesis_exe
@@ -44,13 +36,3 @@ def test_kmeans_clustering():
         for m in ret.mols_from_pdb:
             print("num_atoms = ", m.num_atoms)
         print(ret.cluster_idxs)
-
-
-def main():
-    if os.path.exists("dummy.trj"):
-        os.remove("dummy.trj")
-    test_kmeans_clustering()
-
-
-if __name__ == "__main__":
-    main()

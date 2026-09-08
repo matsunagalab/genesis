@@ -47,22 +47,32 @@ module mbar_analyze_mod
     real(wp),      allocatable :: v(:)         ! (nstep)
   end type s_u_kl
 
-  type s_f_k
+  type, public :: s_f_k
     real(wp),      allocatable :: v(:)         ! (nbrella)
   end type s_f_k
 
-  type s_bin_k
+  type, public :: s_bin_k
     integer,       allocatable :: v(:)         ! (nstep)
     real(wp),      allocatable :: center_x(:)  ! (nbin_x,ndim)
     real(wp),      allocatable :: center_y(:)  ! (nbin_y,ndim)
   end type s_bin_k
 
-  type s_pmf
+  type, public :: s_pmf
     real(wp),      allocatable :: v(:)         ! (maximum nbin)
   end type s_pmf
 
   ! constants
   real(wp),        parameter   :: KB   = 0.00198719168260038_wp
+
+  ! Everything analyze_mbar_unified computes; output_mbar writes it to files,
+  ! the Python interface hands parts of it to NumPy.
+  type, public :: s_mbar_result
+    type(s_bin_k),    allocatable :: bin_k(:)      ! (nbrella)
+    type(s_f_k),      allocatable :: f_k(:)        ! (nblocks)
+    type(s_pmf),      allocatable :: pmf(:)        ! (nblocks)
+    real(wp),         allocatable :: weight_k(:,:) ! (nstep, nbrella)
+    real(wp),         allocatable :: time_k(:,:)   ! (nstep, nbrella)
+  end type s_mbar_result
 
   ! module variables
   real(wp),    allocatable :: g_rep_N_k  (:,:) ! (nstp, nrep)
@@ -79,6 +89,8 @@ module mbar_analyze_mod
 
   ! subroutines
   public  :: analyze
+  public  :: analyze_mbar_unified
+  public  :: mbar_output_unit
 
   private :: build_data_k_from_cv
   private :: build_data_k_from_ene
@@ -138,26 +150,77 @@ contains
     type(s_option),          intent(inout) :: option
 
     ! local variables
-    type(s_data_k),   allocatable :: data_k(:)     ! (nbrella)
-    type(s_u_kl),     allocatable :: u_kl(:,:)     ! (nbrella, nbrella)
-    type(s_u_kl),     allocatable :: u_k(:)        ! (nbrella)
-    type(s_f_k),      allocatable :: f_k(:), f_k_tmp(:) ! (nblocks)
-    type(s_bin_k),    allocatable :: bin_k(:)      ! (nbrella)
-    type(s_pmf),      allocatable :: pmf(:)        ! (nblocks)
-    real(wp),         allocatable :: weight_k(:,:) ! (nstep, nbrella)
-    real(wp),         allocatable :: time_k(:,:)   ! (nstep, nbrella)
-    integer                       :: i, j, iblock, nstep
-    real(wp)                      :: f_sum
-
-    real(8):: time_start, time_end
+    type(s_mbar_result)      :: res
 
 
-    ! check only
-    !
     if (option%check_only) &
       return
 
-    ! read reference files if Cartesian CV
+    call analyze_mbar_unified(molecule, input, option, res)
+    call output_mbar(option, output, res%bin_k(1), res%f_k, res%pmf, &
+                     res%weight_k, res%time_k)
+
+    return
+
+  end subroutine analyze
+
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
+  !  Function      mbar_output_unit
+  !> @brief        factor that converts reduced free energies to the unit
+  !!               selected by out_unit (kcal/mol or NONE)
+  !! @authors      Claude Code
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  function mbar_output_unit(option) result(out_unit)
+
+    ! formal arguments
+    type(s_option),          intent(in)    :: option
+
+    ! return value
+    real(wp) :: out_unit
+
+    out_unit = 1.0_wp
+    if (option%out_unit == 'kcal/mol') then
+      out_unit = KB * option%target_temperature
+    else if (option%out_unit == 'NONE') then
+      out_unit = 1.0_wp
+    end if
+
+    return
+
+  end function mbar_output_unit
+
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
+  !  Subroutine    analyze_mbar_unified
+  !> @brief        MBAR (shared by the CLI and the Python interface)
+  !! @authors      NT, Claude Code
+  !! @param[in]    molecule : molecule information
+  !! @param[in]    input    : input information
+  !! @param[inout] option   : option information
+  !! @param[out]   res      : free energies, PMF, weights and times
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  subroutine analyze_mbar_unified(molecule, input, option, res)
+
+    ! formal arguments
+    type(s_molecule),        intent(in)    :: molecule
+    type(s_input),           intent(in)    :: input
+    type(s_option),          intent(inout) :: option
+    type(s_mbar_result),     intent(out)   :: res
+
+    ! local variables
+    type(s_data_k),   allocatable :: data_k(:)     ! (nbrella)
+    type(s_u_kl),     allocatable :: u_kl(:,:)     ! (nbrella, nbrella)
+    type(s_u_kl),     allocatable :: u_k(:)        ! (nbrella)
+    type(s_f_k),      allocatable :: f_k_tmp(:)    ! (nblocks)
+    integer                       :: i, j, iblock, nstep
+
+
+    ! read reference structures
     !
     if (option%read_ref_path) then
       if (input%pathfile /= '') then
@@ -173,37 +236,25 @@ contains
       endif
     endif
 
-    ! build data_k
+    ! read data
     !
     if (option%input_type == InputTypeCV .or. option%input_type == InputTypeUS) then
-
       if (input%cvfile /= '') then
-
-        call build_data_k_from_cv(input%cvfile, option, data_k, time_k)
-    
+        call build_data_k_from_cv(input%cvfile, option, data_k, res%time_k)
       else if (input%dcdfile /= '') then
-    
         if (option%read_ref_path .or. option%read_ref_pdb) then
           call build_data_k_from_dcd_posi_readref(input%dcdfile, molecule, option, data_k, &
-                                           time_k)
+                                           res%time_k)
         else
-          call build_data_k_from_dcd(input%dcdfile, molecule, option, data_k, time_k)
+          call build_data_k_from_dcd(input%dcdfile, molecule, option, data_k, res%time_k)
         endif
-    
       end if
-
         if (input%refenefile /= '') &
-         call build_data_k_from_refene(input%refenefile, option, data_k, time_k)
-
+         call build_data_k_from_refene(input%refenefile, option, data_k, res%time_k)
     else
-
-      call build_data_k_from_ene(input%cvfile, option, data_k, time_k)
-      
+      call build_data_k_from_ene(input%cvfile, option, data_k, res%time_k)
     end if
 
-
-    ! build target data data_k()%vtarget() for weight calculation
-    !
     do i = 1, option%num_replicas
       if (input%dcdfile /= '' .and. (option%read_ref_path .or. option%read_ref_pdb)) then
         nstep = size(data_k(i)%vcrd(1,:))
@@ -213,60 +264,44 @@ contains
       allocate(data_k(i)%vtarget(nstep))
     end do
 
-    if (input%targetfile /= '') then    
+    if (input%targetfile /= '') then
       call add_data_k_from_target(input%targetfile, option, data_k)
     else
       do i = 1, option%num_replicas
         nstep = size(data_k(i)%vtarget(:))
-
         if (option%input_type == InputTypeCV .or. option%input_type == InputTypeUS) then
           data_k(i)%vtarget(:) = 0.0_wp
-
         else if (option%input_type == InputTypeEneSingle .or. option%input_type == InputTypeREMD) then
           do j = 1, nstep
             data_k(i)%vtarget(j) = data_k(i)%v(j, 1)
           end do
-
         else if (option%input_type == InputTypeEnePair .or. option%input_type == InputTypeFEP) then
           data_k(i)%vtarget(:) = 0.0_wp
-
         else if (option%input_type == InputTypeEneAll .or. option%input_type == InputTypeREST &
                  .or. option%input_type == InputTypeMBGO) then
           do j = 1, nstep
             data_k(i)%vtarget(j) = data_k(i)%v(j, i)
           end do
-
         end if
-
       end do
     end if
 
-    ! build u_kl
+    ! reduced potential energies
     !
     if (option%input_type == InputTypeCV .or. option%input_type == InputTypeUS) then
-
       if (option%read_ref_path .or. option%read_ref_pdb) then
-
         call build_u_kl_from_posi_readref(option, data_k, u_kl)
-
       else
-
         if (input%refenefile /= '') then
-          call build_u_kl_from_cv_ene(option, data_k, u_kl)        
+          call build_u_kl_from_cv_ene(option, data_k, u_kl)
         else
-          call build_u_kl_from_cv(option, data_k, u_kl)        
+          call build_u_kl_from_cv(option, data_k, u_kl)
         end if
-
       end if
-
     else
-
         call build_u_kl_from_ene(option, data_k, u_kl)
-
     end if
 
-    ! build u_k
-    !
     allocate(u_k(option%num_replicas))
     do i = 1, option%num_replicas
       nstep = size(data_k(i)%vtarget(:))
@@ -276,70 +311,49 @@ contains
       end do
     end do
 
-    ! solve mbar
+    ! solve MBAR
     !
     if (option%input_type == InputTypeEnePair .or. option%input_type == InputTypeFEP) then
-      allocate(f_k(option%nblocks))
+      allocate(res%f_k(option%nblocks))
       do iblock = 1, option%nblocks
-        allocate(f_k(iblock)%v(option%num_replicas))
+        allocate(res%f_k(iblock)%v(option%num_replicas))
         do i = 1, option%num_replicas
-          f_k(iblock)%v(i) = 0.0_wp
+          res%f_k(iblock)%v(i) = 0.0_wp
         end do
       end do
-      !f_sum = 0.0_wp
       do i = 1, option%num_replicas-1
         call solve_mbar(option, u_kl(i:i+1, i:i+1), f_k_tmp)
-        !f_sum = f_sum + f_k(1)%v(2)
         do iblock = 1, option%nblocks
-          f_k(iblock)%v(i+1) = f_k(iblock)%v(i) + f_k_tmp(iblock)%v(2)
+          res%f_k(iblock)%v(i+1) = res%f_k(iblock)%v(i) + f_k_tmp(iblock)%v(2)
         end do
         write(*, *)'f_k_tmp = ', f_k_tmp(1)%v
-        write(*, *)'f_k = ', f_k(1)%v
+        write(*, *)'f_k = ', res%f_k(1)%v
         deallocate(f_k_tmp)
       end do
     else
-!      time_start = omp_get_wtime()
-      call solve_mbar(option, u_kl, f_k)
-!      time_end = omp_get_wtime()
-      ! write(*,*) 'Elapsed time in sec = ', time_end - time_start
+      call solve_mbar(option, u_kl, res%f_k)
     end if
 
-
-    ! solve mbar weight
+    ! weights and PMF
     !
     if (option%input_type /= InputTypeEnePair .and. option%input_type /= InputTypeFEP) then
-      call compute_weight(option, u_kl, u_k, bin_k, f_k, weight_k)
+      call compute_weight(option, u_kl, u_k, res%bin_k, res%f_k, res%weight_k)
     end if
 
-
-    ! assign bin
-    !
     if (option%input_type == InputTypeCV .or. option%input_type == InputTypeUS) then
-      call assign_bin(option, data_k, bin_k)
+      call assign_bin(option, data_k, res%bin_k)
     end if
 
-
-    ! solve mbar pmf
-    !
     if (option%input_type == InputTypeCV .or. option%input_type == InputTypeUS) then
-      call compute_pmf(option, u_kl, u_k, bin_k, f_k, pmf)
+      call compute_pmf(option, u_kl, u_k, res%bin_k, res%f_k, res%pmf)
     end if
 
-
-    ! output f_k and pmf
-    !
-    ! bin_k / pmf are only populated for CV/US input; energy-based input types
-    ! (EneSingle/REMD/...) never allocate them. output_mbar only dereferences
-    ! them when a pmffile is requested (CV/US only), so allocate harmless
-    ! 1-element placeholders to keep the bin_k(1)/pmf actual arguments in bounds.
-    if (.not. allocated(bin_k)) allocate(bin_k(1))
-    if (.not. allocated(pmf))   allocate(pmf(1))
-    call output_mbar(option, output, bin_k(1), f_k, pmf, weight_k, time_k)
-
+    if (.not. allocated(res%bin_k)) allocate(res%bin_k(1))
+    if (.not. allocated(res%pmf))   allocate(res%pmf(1))
 
     return
 
-  end subroutine analyze
+  end subroutine analyze_mbar_unified
 
   !======1=========2=========3=========4=========5=========6=========7=========8
   subroutine readref_path(pathfile, option)

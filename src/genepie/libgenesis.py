@@ -86,20 +86,6 @@ class LibGenesis:
                 ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
         self.lib.deallocate_s_trajectories_c_array.restype = None
 
-        self.lib.crd_convert_c.argtypes = [
-                ctypes.POINTER(SMoleculeC),
-                ctypes.c_char_p,                  # ctrl_text
-                ctypes.c_int,                     # ctrl_len
-                ctypes.POINTER(ctypes.c_void_p),
-                ctypes.POINTER(ctypes.c_int),
-                ctypes.POINTER(ctypes.c_void_p),
-                ctypes.POINTER(ctypes.c_int),
-                ctypes.POINTER(ctypes.c_int),
-                ctypes.c_char_p,
-                ctypes.c_int,
-                ]
-        self.lib.crd_convert_c.restype = None
-
         # crd_convert info (zerocopy phase 1: get trajectory metadata)
         self.lib.crd_convert_info_c.argtypes = [
                 ctypes.POINTER(SMoleculeC),       # molecule_c
@@ -487,6 +473,9 @@ class LibGenesis:
                 ctypes.POINTER(ctypes.c_void_p),
                 ctypes.POINTER(ctypes.c_int),
                 ctypes.POINTER(ctypes.c_int),
+                ctypes.POINTER(ctypes.c_int),     # status
+                ctypes.c_char_p,                  # msg
+                ctypes.c_int,                     # msglen
                 ]
         self.lib.ma_analysis_c.restype = None
 
@@ -522,9 +511,6 @@ class LibGenesis:
                 ctypes.c_int,
                 ]
         self.lib.hb_analysis_c.restype = None
-
-        self.lib.deallocate_hb_results_c.argtypes = []
-        self.lib.deallocate_hb_results_c.restype = None
 
         self.lib.aa_analysis_c.argtypes = [
                 ctypes.POINTER(SMoleculeC),

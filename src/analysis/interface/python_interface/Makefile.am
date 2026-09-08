@@ -31,29 +31,19 @@ libpython_interface_la_SOURCES = \
         ctrl_c_mod.fpp \
         define_molecule.fpp \
         s_trajectories_c_mod.fpp \
-        crd_convert_impl.fpp \
         crd_convert_c_mod.fpp \
         trj_c_mod.fpp \
-        trj_impl.fpp \
         rg_c_mod.fpp \
         rmsd_c_mod.fpp \
         drms_c_mod.fpp \
         msd_c_mod.fpp \
-        msd_impl.fpp \
         hb_c_mod.fpp \
-        hb_impl.fpp \
         diffusion_c_mod.fpp \
-        diffusion_impl.fpp \
         avecrd_c_mod.fpp \
-        avecrd_impl.fpp \
         wham_c_mod.fpp \
-        wham_impl.fpp \
         mbar_c_mod.fpp \
-        mbar_impl.fpp \
         pmf_c_mod.fpp \
-        pmf_impl.fpp \
         kmeans_c_mod.fpp \
-        kmeans_impl.fpp \
         dynamic_string_mod.fpp \
         internal_file_type_mod.fpp \
         export_molecule_c_mod.fpp \

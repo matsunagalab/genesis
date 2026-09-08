@@ -14,7 +14,7 @@
 
 module pmf_c_mod
   use, intrinsic :: iso_c_binding
-  use pmf_impl_mod
+  use pm_analyze_mod
 
   use pm_control_mod
   use pm_setup_mod
@@ -43,7 +43,6 @@ module pmf_c_mod
   end type t_pmf_analysis_ctx
 
   private :: t_pmf_analysis_ctx
-  private :: pmf_analysis_body
 
 contains
 
@@ -108,36 +107,55 @@ contains
     type(s_option)         :: option
     type(s_input)          :: input
     type(s_output)         :: output
-
+    real(wp), allocatable  :: pmf1d(:,:), pmf2d(:,:)
+    integer                :: i, j
 
     my_city_rank = 0
     nproc_city   = 1
     main_rank    = .true.
 
+    nullify(result_pmf)
+    n_out1 = 0
+    n_out2 = 0
 
-    ! [Step1] Read control file
-    !
     write(MsgOut,'(A)') '[STEP1] Read Control Parameters for Analysis'
     write(MsgOut,'(A)') ' '
-
     call control_from_string(ctrl_text, ctrl_len, ctrl_data)
 
-
-    ! [Step2] Set relevant variables and structures
-    !
     write(MsgOut,'(A)') '[STEP2] Set Relevant Variables and Structures'
     write(MsgOut,'(A)') ' '
-
     call setup(ctrl_data, option, input, output)
 
+    if (option%check_only) return
 
-    ! [Step3] Analyze trajectory
-    !
     write(MsgOut,'(A)') '[STEP3] Analysis trajectory files'
     write(MsgOut,'(A)') ' '
+    call analyze_pmf_unified(input, option, pmf1d, pmf2d)
 
-    call analyze(input, output, option, result_pmf, n_out1, n_out2, err)
-    if (error_has(err)) return
+    ! Python layout: 1-D -> rows (center, standard PMF, Gaussian PMF) per bin;
+    ! 2-D -> (nbin_y, nbin_x) so that NumPy sees (nbin_x, nbin_y)
+    if (option%dimension == 1) then
+      n_out1 = size(pmf1d, 2)      ! number of bins (Python rows)
+      n_out2 = 3
+      allocate(result_pmf(n_out2, n_out1))
+      do i = 1, n_out1
+        result_pmf(1, i) = option%center(1, i)
+        result_pmf(2, i) = pmf1d(1, i)
+        result_pmf(3, i) = pmf1d(2, i)
+      end do
+    else if (option%dimension == 2) then
+      n_out1 = size(pmf2d, 1)      ! nbin_x (Python rows)
+      n_out2 = size(pmf2d, 2)      ! nbin_y (Python cols)
+      allocate(result_pmf(n_out2, n_out1))
+      do i = 1, n_out1
+        do j = 1, n_out2
+          result_pmf(j, i) = pmf2d(i, j)
+        end do
+      end do
+    else
+      call error_set(err, ERROR_DIM_NOT_SUPP, &
+                     'pmf_analysis> dimension must be 1 or 2')
+    end if
 
   end subroutine pmf_analysis_main
 

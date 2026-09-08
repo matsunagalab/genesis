@@ -45,46 +45,13 @@ jobs:
 
       - name: Install Python package
         run: |
-          pip install -e .
+          pip install -e ".[dev]"
 
-      - name: Run basic tests
+      - name: Run tests
         run: |
-          python -m genepie.tests.test_rmsd
-          python -m genepie.tests.test_rmsd_lazy
-          python -m genepie.tests.test_rg
-          python -m genepie.tests.test_drms
-          python -m genepie.tests.test_crd_convert
-          python -m genepie.tests.test_crd_convert_lazy
-          python -m genepie.tests.test_avecrd
-
-      - name: Run regression tests
-        working-directory: src/genepie/tests
-        run: |
-          # Regression tests use relative paths that expect CWD to be src/genepie/tests/
-          python -m genepie.tests.test_trj
-          python -m genepie.tests.test_wham
-          python -m genepie.tests.test_pmf
-          python -m genepie.tests.test_mbar_1d
-          python -m genepie.tests.test_mbar_block
-          python -m genepie.tests.test_hb_atom
-          python -m genepie.tests.test_hb_snap
-          python -m genepie.tests.test_kmeans
-          # Note: test_msd and test_diffusion are skipped in CI due to high memory usage
-          # They can be run locally: python -m genepie.tests.test_msd
-
-      - name: Run error handling tests
-        run: |
-          python -m genepie.tests.test_error_handling
-
-      - name: Run MBAR resampling tests
-        run: |
-          # Synthetic resampling tests always run; the reference-regression and
-          # full-pipeline tests self-skip without the T-REMD tutorial data.
-          python -m genepie.tests.test_mbar_resample
-
-      - name: Run ATDYN tests
-        run: |
-          python -m genepie.tests.test_atdyn
+          # test_msd and test_diffusion are memory-heavy and marked slow;
+          # run them locally with: pytest -m slow
+          python -m pytest -m "not slow"
 
   build-and-test-linux-glibc-2-41:
     # glibc >= 2.41 refuses to dlopen() a library that requires an executable
@@ -114,14 +81,14 @@ jobs:
       - name: Install Python package
         run: |
           python3 -m venv /opt/venv
-          /opt/venv/bin/pip install -e .
+          /opt/venv/bin/pip install -e ".[dev]"
 
       - name: Load the library and run guard-path tests
         run: |
           ldd --version | head -1
-          /opt/venv/bin/python -m genepie.tests.test_rmsd_lazy
-          /opt/venv/bin/python -m genepie.tests.test_crd_convert_lazy
-          /opt/venv/bin/python -m genepie.tests.test_error_handling
+          /opt/venv/bin/python -m pytest src/genepie/tests/test_rmsd.py \
+            src/genepie/tests/test_crd_convert_lazy.py \
+            src/genepie/tests/test_error_handling.py
 
   build-and-test-macos:
     runs-on: macos-latest
@@ -155,43 +122,10 @@ jobs:
 
       - name: Install Python package
         run: |
-          pip install -e .
+          pip install -e ".[dev]"
 
-      - name: Run basic tests
+      - name: Run tests
         run: |
-          python -m genepie.tests.test_rmsd
-          python -m genepie.tests.test_rmsd_lazy
-          python -m genepie.tests.test_rg
-          python -m genepie.tests.test_drms
-          python -m genepie.tests.test_crd_convert
-          python -m genepie.tests.test_crd_convert_lazy
-          python -m genepie.tests.test_avecrd
-
-      - name: Run regression tests
-        working-directory: src/genepie/tests
-        run: |
-          # Regression tests use relative paths that expect CWD to be src/genepie/tests/
-          python -m genepie.tests.test_trj
-          python -m genepie.tests.test_wham
-          python -m genepie.tests.test_pmf
-          python -m genepie.tests.test_mbar_1d
-          python -m genepie.tests.test_mbar_block
-          python -m genepie.tests.test_hb_atom
-          python -m genepie.tests.test_hb_snap
-          python -m genepie.tests.test_kmeans
-          # Note: test_msd and test_diffusion are skipped in CI due to high memory usage
-          # They can be run locally: python -m genepie.tests.test_msd
-
-      - name: Run error handling tests
-        run: |
-          python -m genepie.tests.test_error_handling
-
-      - name: Run MBAR resampling tests
-        run: |
-          # Synthetic resampling tests always run; the reference-regression and
-          # full-pipeline tests self-skip without the T-REMD tutorial data.
-          python -m genepie.tests.test_mbar_resample
-
-      - name: Run ATDYN tests
-        run: |
-          python -m genepie.tests.test_atdyn
+          # test_msd and test_diffusion are memory-heavy and marked slow;
+          # run them locally with: pytest -m slow
+          python -m pytest -m "not slow"

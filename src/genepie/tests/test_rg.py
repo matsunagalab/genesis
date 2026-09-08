@@ -1,13 +1,3 @@
-# --------------------------------------------
-if __name__ == "__main__" and __package__ is None:
-    import sys, pathlib
-    pkg_dir = pathlib.Path(__file__).resolve().parent
-    sys.path.insert(0, str(pkg_dir.parent.parent))
-    __package__ = "genepie.tests"
-# --------------------------------------------
-import os
-import subprocess
-import sys
 import numpy as np
 from .conftest import BPTI_PDB, BPTI_PSF, BPTI_DCD
 from ..s_molecule import SMolecule
@@ -128,60 +118,3 @@ def test_rg_lazy_vs_memory():
     print(f"Memory vs Lazy RG comparison passed: {len(result_mem.rg)} frames")
     print(f"  Memory: min={min(result_mem.rg):.5f}, max={max(result_mem.rg):.5f}")
     print(f"  Lazy:   min={min(result_lazy.rg):.5f}, max={max(result_lazy.rg):.5f}")
-
-
-def _run_test_in_subprocess(test_name: str) -> bool:
-    """Run a single test function in isolated subprocess to avoid Fortran state issues."""
-    code = f'''
-import sys
-if __name__ == "__main__":
-    import pathlib
-    pkg_dir = pathlib.Path("{__file__}").resolve().parent
-    sys.path.insert(0, str(pkg_dir.parent.parent))
-
-from genepie.tests.test_rg import {test_name}
-{test_name}()
-'''
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=120
-    )
-
-    if result.returncode == 0:
-        if result.stdout:
-            print(result.stdout, end='')
-        return True
-    else:
-        print(f"stdout: {result.stdout}" if result.stdout else "")
-        print(f"stderr: {result.stderr}" if result.stderr else "")
-        return False
-
-
-def main():
-    if os.path.exists("dummy.trj"):
-        os.remove("dummy.trj")
-
-    tests = [
-        "test_rg_analysis",
-        "test_rg_lazy",
-        "test_rg_lazy_vs_memory",
-    ]
-
-    failed = []
-    for test_name in tests:
-        if _run_test_in_subprocess(test_name):
-            print(f"\n{test_name}: PASSED")
-        else:
-            print(f"\n{test_name}: FAILED")
-            failed.append(test_name)
-
-    if failed:
-        raise RuntimeError(f"Tests failed: {', '.join(failed)}")
-
-    print("\nAll RG tests passed!")
-
-
-if __name__ == "__main__":
-    main()

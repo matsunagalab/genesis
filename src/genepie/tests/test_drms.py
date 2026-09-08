@@ -1,13 +1,3 @@
-# --------------------------------------------
-if __name__ == "__main__" and __package__ is None:
-    import sys, pathlib
-    pkg_dir = pathlib.Path(__file__).resolve().parent
-    sys.path.insert(0, str(pkg_dir.parent.parent))
-    __package__ = "genepie.tests"
-# --------------------------------------------
-import os
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
 import numpy as np
@@ -276,62 +266,3 @@ def test_drms_lazy_triclinic_box_matches_memory():
         np.testing.assert_allclose(
             lazy_result, mem_result, rtol=1e-4, atol=1e-6
         )
-
-
-def _run_test_in_subprocess(test_name: str) -> bool:
-    """Run a single test function in isolated subprocess to avoid Fortran state issues."""
-    code = f'''
-import sys
-if __name__ == "__main__":
-    import pathlib
-    pkg_dir = pathlib.Path("{__file__}").resolve().parent
-    sys.path.insert(0, str(pkg_dir.parent.parent))
-
-from genepie.tests.test_drms import {test_name}
-{test_name}()
-'''
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=120
-    )
-
-    if result.returncode == 0:
-        if result.stdout:
-            print(result.stdout, end='')
-        return True
-    else:
-        print(f"stdout: {result.stdout}" if result.stdout else "")
-        print(f"stderr: {result.stderr}" if result.stderr else "")
-        return False
-
-
-def main():
-    if os.path.exists("dummy.trj"):
-        os.remove("dummy.trj")
-
-    tests = [
-        "test_drms_analysis",
-        "test_drms_lazy",
-        "test_drms_lazy_vs_memory",
-        "test_drms_lazy_selected_view",
-        "test_drms_lazy_triclinic_box_matches_memory",
-    ]
-
-    failed = []
-    for test_name in tests:
-        if _run_test_in_subprocess(test_name):
-            print(f"\n{test_name}: PASSED")
-        else:
-            print(f"\n{test_name}: FAILED")
-            failed.append(test_name)
-
-    if failed:
-        raise RuntimeError(f"Tests failed: {', '.join(failed)}")
-
-    print("\nAll DRMS tests passed!")
-
-
-if __name__ == "__main__":
-    main()

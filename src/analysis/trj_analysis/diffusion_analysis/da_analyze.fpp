@@ -26,12 +26,13 @@ module da_analyze_mod
 
   ! subroutines
   public  :: analyze
+  public  :: analyze_diffusion_unified
   private :: fit_least_squares
   private :: get_column_count
   private :: get_line_count
 
   ! fitting result for a + bx
-  type :: s_fitting_result
+  type, public :: s_fitting_result
     real(wp), dimension(2) :: coeff   ! coefficients of the fitting (a, b)
     real(wp), dimension(2) :: stderr  ! standard error of each coefficient
     real(wp)               :: corr    ! correlation coefficient, showing 
@@ -61,10 +62,9 @@ contains
     ! local variables
     integer                                :: msd_data, fit_data, ndata, ncols
     integer                                :: iset, idata, nlines
-    integer                                :: idx_start_fit, idx_stop_fit, iline
+    integer                                :: idx_start_fit, idx_stop_fit
     integer,  allocatable, dimension(:)    :: ndofs
-    real(wp)                               :: diffusion_coefficient
-    real(wp), allocatable, dimension(:, :) :: xydata
+    real(wp), allocatable, dimension(:, :) :: xydata, out_data
     character(*), parameter                :: format_float = "es25.16e3"
     type(s_fitting_result), dimension(:), allocatable :: fittings
 
@@ -72,8 +72,7 @@ contains
     if (option%check_only) &
       return
 
-
-    ! check data size
+    ! read the MSD data file
     !
     nlines  = get_line_count (trim(input%msdfile))
     ndata   = nlines
@@ -90,115 +89,61 @@ contains
     end if
 
     allocate(xydata(ncols, ndata))
+    allocate(out_data(2*(ncols-1)+1, ndata))
     allocate(fittings(ncols-1))
-    
 
-    ! read MDS data
-    !
     call open_file(msd_data, trim(input%msdfile), IOFileInput)
     read(msd_data, *) xydata
     call close_file(msd_data)
 
-    ! convert to ps and angstroms
-    !
-    xydata(1, :)  = xydata(1, :)  * option%time_step
-    xydata(2:, :) = xydata(2:, :) * option%distance_unit ** 2
-    do iset = 2, ncols
-      xydata(iset, :) = xydata(iset, :) / (2.0_wp * ndofs(iset-1))
-    end do
-
-    ! determine data index from where to fit
+    ! fitting range (indices into the data)
     !
     if (option%start_percent >= 0_wp) then
       idx_start_fit = max(nint(ndata*option%start_percent/100), 1)
     else if (option%start_time >= 0_wp) then
-      idx_start_fit = max(minloc(abs(xydata(1, :)-option%start_time), 1), 1)
+      idx_start_fit = max(minloc(abs(xydata(1, :)*option%time_step &
+                                     - option%start_time), 1), 1)
     else if (option%start_step > 0) then
       idx_start_fit = option%start_step
     else
       idx_start_fit = 1
     end if
 
-    ! determine data index up to where to fit
-    !
     if (option%stop_percent >= 0_wp) then
       idx_stop_fit = min(nint(ndata*option%stop_percent/100), ndata)
     else if (option%stop_time >= 0_wp) then
-      idx_stop_fit = min(minloc(abs(xydata(1, :)-option%stop_time), 1), ndata)
+      idx_stop_fit = min(minloc(abs(xydata(1, :)*option%time_step &
+                                    - option%stop_time), 1), ndata)
     else if (option%stop_step > 0) then
       idx_stop_fit = option%stop_step
     else
       idx_stop_fit = ndata
     end if
 
-
-    ! Analyze
+    ! fit (shared with the Python interface)
     !
-    write(MsgOut, '()')
-    write(MsgOut, '("Analyze> Starting fit at",es9.2e2," ps and using ",i0,' &
-      //'" out of ",i0," available sample points with ", i0, " data sets")') &
-      xydata(1, idx_start_fit), idx_stop_fit - idx_start_fit + 1, ndata, ncols-1
+    call analyze_diffusion_unified(xydata, option%time_step, &
+                                   option%distance_unit, ndofs, &
+                                   idx_start_fit, idx_stop_fit, &
+                                   out_data, fittings)
 
-    write(MsgOut, '("Analyze> Fitting function (A^2/ps): f(x) = b * x + a ")')
-    write(MsgOut, '()')
-
-    do iset = 1, ncols-1
-
-      ! results are in A^2/ps
-      !
-      fittings(iset) = fit_least_squares(xydata(1,idx_start_fit:idx_stop_fit), &
-        xydata(iset+1, idx_start_fit:idx_stop_fit), .true.)
-      write(MsgOut, &
-        '("Analyze> (Set ",i0,") Fitting coefficient:        a =",'&
-        //format_float//')') iset, fittings(iset)%coeff(1)
-      write(MsgOut, &
-        '("Analyze> (Set ",i0,") Fitting coefficient:        b =",'&
-        //format_float//')') iset, fittings(iset)%coeff(2)
-      write(MsgOut, &
-        '("Analyze> (Set ",i0,") Standard error:         SE(a) =",'&
-        //format_float//')') iset, fittings(iset)%stderr(1)
-      write(MsgOut, &
-        '("Analyze> (Set ",i0,") Standard error:         SE(b) =",'&
-        //format_float//')') iset, fittings(iset)%stderr(2)
-      write(MsgOut, &
-        '("Analyze> (Set ",i0,") Correleation coefficient:   r =",'&
-        //format_float//')') iset, fittings(iset)%corr
-
-      ! convert diffusion coefficient to cm/s
-      !
-      diffusion_coefficient = fittings(iset)%coeff(2) * 1e-4_wp
-      write(MsgOut, &
-        '("Analyze> (Set ",i0,") Diffusion coefficient (cm^2/s):",'&
-        //format_float//')') iset, diffusion_coefficient
-      write(MsgOut, '()')
-
-    end do
-
-
-    ! Output results
+    ! write the fitted data
     !
     if (output%outfile /= '') then
-
       write(MsgOut, '("Analyze> Writing fitted data to ", A)') trim(output%outfile)
-
       call open_file(fit_data, trim(output%outfile), IOFileOutputNew)
-
       do idata = 1, ndata
-        write(fit_data, '('//format_float//')', advance="no") xydata(1, idata)
+        write(fit_data, '('//format_float//')', advance="no") out_data(1, idata)
         do iset = 1, ncols-1
           write(fit_data, '(2'//format_float//')', advance="no") &
-            xydata(iset+1, idata), &
-            fittings(iset)%coeff(1)+fittings(iset)%coeff(2)*xydata(1, idata)
+            out_data(2*iset, idata), out_data(2*iset+1, idata)
         end do
         write(fit_data, '()')
       end do
-
       call close_file(fit_data)
-
     end if
 
-
-    ! Output Summary
+    ! Output summary
     !
     write(MsgOut,'(A)') ''
     write(MsgOut,'(A)') 'Analyze> Detailed information in the output files'
@@ -214,10 +159,112 @@ contains
     end do
     write(MsgOut,'(A)') ''
 
-
     return
 
   end subroutine analyze
+
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
+  !  Subroutine    analyze_diffusion_unified
+  !> @brief        fit the MSD data and derive the diffusion coefficients
+  !!               (shared by the CLI and the Python interface)
+  !! @authors      Claude Code
+  !! @param[in]    msd_data      : (ncols, ndata) raw data: time and MSD sets
+  !! @param[in]    time_step     : time unit of column 1 (ps)
+  !! @param[in]    distance_unit : length unit of the MSD columns (angstrom)
+  !! @param[in]    ndofs         : degrees of freedom of each MSD set
+  !! @param[in]    idx_start_fit : first data index of the fit range
+  !! @param[in]    idx_stop_fit  : last data index of the fit range
+  !! @param[inout] out_data      : (2*nsets+1, ndata) time, then (MSD, fit)
+  !!                               of each set, in fitted units
+  !! @param[out]   fittings      : fit coefficients and statistics per set;
+  !!                               the diffusion coefficient (cm^2/s) is
+  !!                               coeff(2) * 1e-4
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  subroutine analyze_diffusion_unified(msd_data, time_step, distance_unit, &
+                                       ndofs, idx_start_fit, idx_stop_fit, &
+                                       out_data, fittings)
+
+    ! formal arguments
+    real(wp),               intent(in)    :: msd_data(:,:)
+    real(wp),               intent(in)    :: time_step
+    real(wp),               intent(in)    :: distance_unit
+    integer,                intent(in)    :: ndofs(:)
+    integer,                intent(in)    :: idx_start_fit
+    integer,                intent(in)    :: idx_stop_fit
+    real(wp),               intent(inout) :: out_data(:,:)
+    type(s_fitting_result), intent(out)   :: fittings(:)
+
+    ! local variables
+    integer                                :: ndata, ncols, iset, idata
+    integer                                :: istart, istop
+    real(wp)                               :: diffusion_coefficient
+    real(wp), allocatable, dimension(:, :) :: xydata
+    character(*), parameter                :: format_float = "es25.16e3"
+
+
+    ncols = size(msd_data, 1)
+    ndata = size(msd_data, 2)
+
+    allocate(xydata(ncols, ndata))
+    xydata = msd_data
+    xydata(1, :)  = xydata(1, :)  * time_step
+    xydata(2:, :) = xydata(2:, :) * distance_unit ** 2
+    do iset = 2, ncols
+      xydata(iset, :) = xydata(iset, :) / (2.0_wp * ndofs(iset-1))
+    end do
+
+    istart = max(idx_start_fit, 1)
+    istop  = min(idx_stop_fit, ndata)
+
+    write(MsgOut, '()')
+    write(MsgOut, '("Analyze> Starting fit at",es9.2e2," ps and using ",i0,' &
+      //'" out of ",i0," available sample points with ", i0, " data sets")') &
+      xydata(1, istart), istop - istart + 1, ndata, ncols-1
+    write(MsgOut, '("Analyze> Fitting function (A^2/ps): f(x) = b * x + a ")')
+    write(MsgOut, '()')
+
+    do iset = 1, ncols-1
+      fittings(iset) = fit_least_squares(xydata(1, istart:istop), &
+                                         xydata(iset+1, istart:istop), .true.)
+      write(MsgOut, &
+        '("Analyze> (Set ",i0,") Fitting coefficient:        a =",'&
+        //format_float//')') iset, fittings(iset)%coeff(1)
+      write(MsgOut, &
+        '("Analyze> (Set ",i0,") Fitting coefficient:        b =",'&
+        //format_float//')') iset, fittings(iset)%coeff(2)
+      write(MsgOut, &
+        '("Analyze> (Set ",i0,") Standard error:         SE(a) =",'&
+        //format_float//')') iset, fittings(iset)%stderr(1)
+      write(MsgOut, &
+        '("Analyze> (Set ",i0,") Standard error:         SE(b) =",'&
+        //format_float//')') iset, fittings(iset)%stderr(2)
+      write(MsgOut, &
+        '("Analyze> (Set ",i0,") Correleation coefficient:   r =",'&
+        //format_float//')') iset, fittings(iset)%corr
+      diffusion_coefficient = fittings(iset)%coeff(2) * 1e-4_wp
+      write(MsgOut, &
+        '("Analyze> (Set ",i0,") Diffusion coefficient (cm^2/s):",'&
+        //format_float//')') iset, diffusion_coefficient
+      write(MsgOut, '()')
+    end do
+
+    out_data(1, :) = xydata(1, :)
+    do iset = 1, ncols-1
+      out_data(2*iset, :) = xydata(iset+1, :)
+      do idata = 1, ndata
+        out_data(2*iset+1, idata) = &
+            fittings(iset)%coeff(1) + fittings(iset)%coeff(2)*xydata(1, idata)
+      end do
+    end do
+
+    deallocate(xydata)
+
+    return
+
+  end subroutine analyze_diffusion_unified
 
   !======1=========2=========3=========4=========5=========6=========7=========8
   !

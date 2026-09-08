@@ -178,6 +178,18 @@ def _find_repo_root_lib_near(mod_file: str) -> Optional[Path]:
                 return hit
     return None
 
+def _find_build_tree_lib(mod_file: str) -> Optional[Path]:
+    """Library freshly built in a source checkout (before ``make install``)."""
+    here = Path(mod_file).resolve()
+    for parent in list(here.parents)[:8]:
+        cand_dir = (parent / "src" / "analysis" / "interface"
+                    / "python_interface" / ".libs")
+        if cand_dir.is_dir():
+            hit = _first_existing(_candidate_paths_in_dir(cand_dir))
+            if hit:
+                return hit
+    return None
+
 def _find_pkg_lib_python_interface_dotlib(mod_file: str) -> Optional[Path]:
     here = Path(mod_file).resolve()
     for parent in list(here.parents)[:8]:
@@ -371,6 +383,12 @@ def load_genesis_lib() -> ctypes.CDLL:
     # in <repo>/pkg/lib/python_interface/.lib/
     p = _find_pkg_lib_python_interface_dotlib(__file__)
     tried.append("<repo>/pkg/lib/python_interface/.lib/")
+    if p:
+        return _load(p)
+
+    # in the build tree of a source checkout (after make, before make install)
+    p = _find_build_tree_lib(__file__)
+    tried.append("<repo>/src/analysis/interface/python_interface/.libs/")
     if p:
         return _load(p)
 

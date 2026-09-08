@@ -107,23 +107,20 @@ scripts. Regenerate generated files only when the task requires it.
 
 ## Testing
 
-Run the narrowest relevant test first:
+The suite is plain pytest (`src/genepie/tests`, configured in
+`pyproject.toml`). Run the narrowest relevant test first:
 
 ```bash
-python -m genepie.tests.test_rmsd
-python -m genepie.tests.test_error_handling
-python -m genepie.tests.test_atdyn
+pytest src/genepie/tests/test_rmsd.py
+pytest src/genepie/tests/test_rmsd.py -k lazy
+pytest -m "not slow"          # what CI runs
+pytest                        # everything, incl. the slow (memory-heavy) tests
 ```
 
-Run the local suite with fail-fast shell behavior:
-
-```bash
-bash -e src/genepie/tests/all_run.sh
-```
-
-`all_run.sh` normally continues after a failed command, so do not rely on a
-plain invocation's final exit status. It skips integration tests when the
-downloaded chignolin data is absent. Optional datasets:
+The loader finds the library in the build tree after `make`, so no
+`make install` or `GENEPIE_LIB_DIR` is needed. Tests that need optional data
+(chignolin, T-REMD, `tests/regression_test/`) skip themselves when it is
+absent:
 
 ```bash
 python -m genepie.tests.download_test_data
@@ -135,12 +132,11 @@ Testing expectations:
 - Python API change: focused test plus relevant integration coverage
 - Fortran/interface change: focused test plus regression/error tests
 - Bug fix: add a regression that fails before the fix
-- New analysis: add `test_<name>.py` and include it in `all_run.sh`
-- `test_msd` and `test_diffusion` are memory-heavy and intentionally omitted
-  from CI
-
-Tests are mostly directly executable modules, not a conventional pytest-only
-suite. Match the style of the neighboring test file.
+- New analysis: add `test_<name>.py` with plain `test_*` functions; shared
+  paths, skip markers and helpers live in `tests/conftest.py`
+- Mark memory-heavy tests `@pytest.mark.slow`; CI runs `-m "not slow"`
+- The Fortran library keeps global state; for repeated ATDYN runs use the
+  `*_isolated` API variants rather than per-test subprocess wrappers
 
 ## Common Change Paths
 

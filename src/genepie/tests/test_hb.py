@@ -1,19 +1,14 @@
-# --------------------------------------------
-if __name__ == "__main__" and __package__ is None:
-    import sys, pathlib
-    pkg_dir = pathlib.Path(__file__).resolve().parent
-    sys.path.insert(0, str(pkg_dir.parent.parent))
-    __package__ = "genepie.tests"
-# --------------------------------------------
-import os
-from .conftest import RALP_PDB, RALP_PSF, RALP_DCD
-from ..s_molecule import SMolecule
+"""hb_analysis: hydrogen-bond counts per atom and per snapshot."""
+import pytest
+
 from .. import genesis_exe
+from ..s_molecule import SMolecule
+from .conftest import RALP_DCD, RALP_PDB, RALP_PSF
 
 
-def test_hb_analysis_Count_atom():
+def _ralp_trajectories():
     mol = SMolecule.from_file(pdb=RALP_PDB, psf=RALP_PSF)
-    trajs, subset_mol = genesis_exe.crd_convert(
+    trajs, _subset = genesis_exe.crd_convert(
         mol,
         trj_files=[str(RALP_DCD)],
         trj_format="DCD",
@@ -24,16 +19,19 @@ def test_hb_analysis_Count_atom():
         center_coord=(0.0, 0.0, 0.0),
         rename_res=["HSE HIS", "HSD HIS"],
     )
+    return mol, trajs
 
-    _ = subset_mol
 
+@pytest.mark.parametrize("output_type", ["Count_atom", "Count_Snap"])
+def test_hb_analysis(output_type):
+    mol, trajs = _ralp_trajectories()
     for t in trajs:
         d = genesis_exe.hb_analysis(
             mol, t,
             selection_group=["sid:PROA",
                              "resname:DPPC & (an:O11 | an:O12 | an:O13 | an:O14)"],
             check_only=False,
-            output_type="Count_atom",
+            output_type=output_type,
             solvent_list="DPPC",
             analysis_atom=1,
             target_atom=2,
@@ -42,14 +40,5 @@ def test_hb_analysis_Count_atom():
             dha_angle=120.0,
             hda_angle=30.0,
         )
+        assert d is not None
         print(d, flush=True)
-
-
-def main():
-    if os.path.exists("dummy.trj"):
-        os.remove("dummy.trj")
-    test_hb_analysis_Count_atom()
-
-
-if __name__ == "__main__":
-    main()

@@ -1,10 +1,3 @@
-# --------------------------------------------
-if __name__ == "__main__" and __package__ is None:
-    import sys, pathlib
-    pkg_dir = pathlib.Path(__file__).resolve().parent
-    sys.path.insert(0, str(pkg_dir.parent.parent))
-    __package__ = "genepie.tests"
-# --------------------------------------------
 """Tests for MBAR weight-based trajectory resampling.
 
 Two groups:
@@ -387,7 +380,3 @@ class TestUmbrellaBiasFreeWeights(unittest.TestCase):
         plain_hist = plain_hist / plain_hist.sum()
 
         np.testing.assert_allclose(plain_hist, weighted_hist, atol=0.01)
-
-
-if __name__ == "__main__":
-    unittest.main()

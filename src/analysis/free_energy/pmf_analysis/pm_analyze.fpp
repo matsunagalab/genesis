@@ -36,6 +36,7 @@ module pm_analyze_mod
 
   ! subroutines
   public  :: analyze
+  public  :: analyze_pmf_unified
   private :: calc_pmf1d
   private :: calc_pmf2d
   private :: check_file_lines
@@ -65,20 +66,115 @@ contains
     type(s_option),          intent(in)    :: option
 
     ! local variables
-    real(wp)                 :: w, d1, d2, KBT, distance
-    integer                  :: ireplica, i, j, file_w, file_d, file_dist, tmp
-    integer                  :: nline, nline_w, nline_d, nline_dist, ncol_d
-    real(wp)                 :: tim
-
-    real(wp),    allocatable :: weight(:), data(:, :), pmf1d(:,:), pmf2d(:, :)
+    integer                  :: i, j, file_d
+    real(wp),    allocatable :: pmf1d(:,:), pmf2d(:, :)
 
 
     if (option%check_only) &
       return
 
+    ! PMF (shared with the Python interface)
+    !
+    call analyze_pmf_unified(input, option, pmf1d, pmf2d)
+
+    ! output
+    !
+    call open_file(file_d, output%pmffile, IOFileOutputNew)
+
+    if (option%dimension == 1) then
+
+      do i = 1, size(pmf1d(1,:))
+        write(file_d,*) option%center(1, i), pmf1d(1, i), pmf1d(2, i)
+      end do
+
+    else if (option%dimension == 2) then
+
+      if(option%output_type == OutputTypeMATLAB) then
+        do j = 1, size(pmf2d(1, :))
+          do i = 1, size(pmf2d(:, 1))
+            write(file_d,'(es25.16e3,$)') pmf2d(i, j)
+          end do
+          write(file_d, *)
+        end do
+      else if(option%output_type == OutputTypeGNUPLOT) then
+        do i = 1, size(pmf2d(:, 1))
+          do j = 1, size(pmf2d(1, :))
+            write(file_d, *) option%center(1, i), option%center(2, j), pmf2d(i, j)
+          end do
+          write(file_d, *)
+        end do
+      end if
+
+    end if
+
+    call close_file(file_d)
+
+    if (option%dimension == 1) then
+      deallocate(pmf1d)
+    else if (option%dimension == 2) then
+      deallocate(pmf2d)
+    end if
+
+    ! Output summary
+    !
+    write(MsgOut,'(A)') ''
+    write(MsgOut,'(A)') 'Analyze> Detailed information in the output files'
+    write(MsgOut,'(A)') ''
+    write(MsgOut,'(A)') '  [pmffile] ' // trim(output%pmffile)
+    if (option%dimension == 1) then
+      if (option%is_periodic(1)) then
+        write(MsgOut,'(A)') '    Column 1: coordinates of grid centers'
+        write(MsgOut,'(A)') '    Column 2: Free energy profile at the corresponding bin'
+        write(MsgOut,'(A)') ''
+      else
+        write(MsgOut,'(A)') '    Column 1: coordinates of grid centers'
+        write(MsgOut,'(A)') '    Column 2: Free energy profile at the corresponding bin &
+                                 by standard method'
+        write(MsgOut,'(A)') '    Column 3: Free energy profile at the corresponding bin &
+                                 by Gaussian Distribution'
+        write(MsgOut,'(A)') ''
+      end if
+    else if (option%dimension == 2) then
+      write(MsgOut,'(A)') '    Row X and Column Y: free energy profile at bin center (X,Y)'
+      write(MsgOut,'(A)') ''
+    end if
+
+    return
+
+  end subroutine analyze
+
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
+  !  Subroutine    analyze_pmf_unified
+  !> @brief        read the CV / weight / distance files and compute the PMF
+  !!               (shared by the CLI and the Python interface)
+  !! @authors      NT, Claude Code
+  !! @param[in]    input  : input information (file names)
+  !! @param[in]    option : option information
+  !! @param[out]   pmf1d  : (2, nbin) standard and Gaussian PMF (dimension 1)
+  !! @param[out]   pmf2d  : (nbin_x, nbin_y) PMF (dimension 2)
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  subroutine analyze_pmf_unified(input, option, pmf1d, pmf2d)
+
+    ! formal arguments
+    type(s_input),           intent(in)    :: input
+    type(s_option),          intent(in)    :: option
+    real(wp), allocatable,   intent(out)   :: pmf1d(:,:)
+    real(wp), allocatable,   intent(out)   :: pmf2d(:,:)
+
+    ! local variables
+    real(wp)                 :: w, d1, d2, KBT, distance
+    integer                  :: ireplica, i, file_w, file_d, file_dist
+    integer                  :: nline, nline_w, nline_d, nline_dist, ncol_d
+    real(wp)                 :: tim
+    real(wp),    allocatable :: weight(:), data(:, :)
+
+
     KBT = KB * option%temperature
 
-    ! setup data
+    ! check input files
     !
     call check_file_lines(get_replicate_name1(input%weightfile, 1), nline_w)
     call check_file_lines(get_replicate_name1(input%cvfile, 1), nline_d)
@@ -87,19 +183,19 @@ contains
     if (nline_w /= 0 .and. nline_w /= nline_d) &
       call error_msg( &
       'Analyze> # of weight file lines is different from cv file lines')
-
     if (ncol_d < (option%dimension+1)) &
       call error_msg( &
       'Analyze> # of column of cv file must be >= dimension+1')
 
     if (input%distfile /= '') then
       call check_file_lines(get_replicate_name1(input%distfile, 1), nline_dist)
-
       if (nline_w /= 0 .and. nline_w /= nline_dist) &
         call error_msg( &
         'Analyze> # of weight file lines is different from distance file lines')
     end if
 
+    ! read data
+    !
     allocate(weight  (nline_d * option%nreplicas), &
              data(option%dimension, nline_d * option%nreplicas))
 
@@ -109,28 +205,19 @@ contains
       file_w = 0
       file_d = 0
       file_dist = 0
-
-      ! open weight file
       if (input%weightfile /= '') &
         call open_file(file_w, get_replicate_name1(input%weightfile, ireplica), &
                        IOFileInput)
-
-      ! open cv file
       call open_file(file_d, get_replicate_name1(input%cvfile, ireplica), &
                      IOFileInput)
-
-      ! open distance file
       if (input%distfile /= '') &
         call open_file(file_dist, get_replicate_name1(input%distfile, ireplica), &
                        IOFileInput)
 
       do i = 1, nline_d
-
-        ! read weight file
         if (file_w /= 0) &
           read(file_w,*) tim, w
 
-        ! read cv file
         if (option%dimension == 1) then
           read(file_d,*) tim, d1
           if (file_dist /= 0) then
@@ -162,17 +249,11 @@ contains
             data(2, nline) = d2
           end if
         end if
-
       end do
 
-      ! close cv file
       call close_file(file_d)
-
-      ! close weight file
       if (file_w /= 0) &
         call close_file(file_w)
-
-      ! close distance file
       if (file_dist /= 0) &
         call close_file(file_dist)
 
@@ -181,8 +262,7 @@ contains
     if (input%weightfile == '') &
       weight(1:nline) = 1.0_wp / real(nline,wp)
 
-
-    ! calc pmf
+    ! PMF
     !
     if (option%dimension == 1) then
       call calc_pmf1d(option, data(:, 1:nline), weight(1:nline), pmf1d)
@@ -190,73 +270,11 @@ contains
       call calc_pmf2d(option, data(:, 1:nline), weight(1:nline), pmf2d)
     end if
 
-    ! output pmf
-    !
-    call open_file(file_d, output%pmffile, IOFileOutputNew)
-
-    if (option%dimension == 1) then
-      do i = 1, size(pmf1d(1,:))
-        write(file_d,*) option%center(1, i), pmf1d(1, i), pmf1d(2, i)
-      end do
-    else if (option%dimension == 2) then
-
-      if(option%output_type == OutputTypeMATLAB) then
-        do j = 1, size(pmf2d(1, :))
-          do i = 1, size(pmf2d(:, 1))
-            write(file_d,'(es25.16e3,$)') pmf2d(i, j)
-          end do
-          write(file_d, *)
-        end do
-      else if(option%output_type == OutputTypeGNUPLOT) then
-        do i = 1, size(pmf2d(:, 1))
-          do j = 1, size(pmf2d(1, :))
-            write(file_d, *) option%center(1, i), option%center(2, j), pmf2d(i, j)
-          end do
-          write(file_d, *)
-        end do
-      end if
-
-    end if
-
-    call close_file(file_d)
-
-    if (option%dimension == 1) then
-      deallocate(pmf1d)
-    else if (option%dimension == 2) then
-      deallocate(pmf2d)
-    end if
-
     deallocate(weight, data)
-
-
-    ! Output summary
-    !
-    write(MsgOut,'(A)') ''
-    write(MsgOut,'(A)') 'Analyze> Detailed information in the output files'
-    write(MsgOut,'(A)') ''
-    write(MsgOut,'(A)') '  [pmffile] ' // trim(output%pmffile)
-    if (option%dimension == 1) then
-      ! Periodic CV cannot print out standard type PMF now 
-      if (option%is_periodic(1)) then
-        write(MsgOut,'(A)') '    Column 1: coordinates of grid centers'
-        write(MsgOut,'(A)') '    Column 2: Free energy profile at the corresponding bin'
-        write(MsgOut,'(A)') ''
-      else
-        write(MsgOut,'(A)') '    Column 1: coordinates of grid centers'
-        write(MsgOut,'(A)') '    Column 2: Free energy profile at the corresponding bin &
-                                 by standard method'
-        write(MsgOut,'(A)') '    Column 3: Free energy profile at the corresponding bin &
-                                 by Gaussian Distribution'
-        write(MsgOut,'(A)') ''
-      end if
-    else if (option%dimension == 2) then
-      write(MsgOut,'(A)') '    Row X and Column Y: free energy profile at bin center (X,Y)'
-      write(MsgOut,'(A)') ''
-    end if
 
     return
 
-  end subroutine analyze
+  end subroutine analyze_pmf_unified
 
   !======1=========2=========3=========4=========5=========6=========7=========8
 

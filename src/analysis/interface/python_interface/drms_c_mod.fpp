@@ -67,7 +67,6 @@ module drms_c_mod
   end type t_drms_lazy_ctx
 
   private :: t_drms_lazy_ctx
-  private :: drms_analysis_lazy_body
 
 contains
 

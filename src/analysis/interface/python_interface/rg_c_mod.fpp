@@ -68,7 +68,6 @@ module rg_c_mod
   end type t_rg_lazy_ctx
 
   private :: t_rg_lazy_ctx
-  private :: rg_analysis_lazy_body
 
 contains
 

@@ -1,13 +1,3 @@
-# --------------------------------------------
-if __name__ == "__main__" and __package__ is None:
-    import sys, pathlib
-    pkg_dir = pathlib.Path(__file__).resolve().parent
-    sys.path.insert(0, str(pkg_dir.parent.parent))
-    __package__ = "genepie.tests"
-# --------------------------------------------
-import os
-import subprocess
-import sys
 import numpy as np
 from .conftest import BPTI_PDB, BPTI_PSF, BPTI_DCD
 from ..s_molecule import SMolecule
@@ -196,60 +186,3 @@ def test_crd_convert_lazy_trj_type_coor():
     assert lazy_traj.lazy_trj_type == 1, f"lazy_trj_type should be 1, got {lazy_traj.lazy_trj_type}"
 
     print(f"Lazy trajectory with COOR: lazy_trj_type={lazy_traj.lazy_trj_type}")
-
-
-def _run_test_in_subprocess(test_name: str) -> bool:
-    """Run a single test function in isolated subprocess to avoid Fortran state issues."""
-    code = f'''
-import sys
-if __name__ == "__main__":
-    import pathlib
-    pkg_dir = pathlib.Path("{__file__}").resolve().parent
-    sys.path.insert(0, str(pkg_dir.parent.parent))
-
-from genepie.tests.test_crd_convert_lazy import {test_name}
-{test_name}()
-'''
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=120
-    )
-
-    if result.returncode == 0:
-        if result.stdout:
-            print(result.stdout, end='')
-        return True
-    else:
-        print(f"stdout: {result.stdout}" if result.stdout else "")
-        print(f"stderr: {result.stderr}" if result.stderr else "")
-        return False
-
-
-def main():
-    tests = [
-        "test_crd_convert_lazy_basic",
-        "test_crd_convert_lazy_with_selection",
-        "test_crd_convert_lazy_selection_and_period_parity",
-        "test_crd_convert_lazy_vs_memory_nframe",
-        "test_crd_convert_lazy_single_file_required",
-        "test_crd_convert_lazy_trj_type_coor",
-    ]
-
-    failed = []
-    for test_name in tests:
-        if _run_test_in_subprocess(test_name):
-            print(f"\n{test_name}: PASSED")
-        else:
-            print(f"\n{test_name}: FAILED")
-            failed.append(test_name)
-
-    if failed:
-        raise RuntimeError(f"Tests failed: {', '.join(failed)}")
-
-    print("\nAll crd_convert lazy tests passed!")
-
-
-if __name__ == "__main__":
-    main()

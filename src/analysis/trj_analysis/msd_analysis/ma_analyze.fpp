@@ -15,6 +15,7 @@
 module ma_analyze_mod
 
   use ma_option_str_mod
+  use trj_source_mod
   use fileio_trj_mod
   use trajectory_str_mod
   use output_str_mod
@@ -30,6 +31,7 @@ module ma_analyze_mod
 
   ! subroutines
   public  :: analyze
+  public  :: analyze_msd_unified
   private :: set_analysis_set_molecule_ranges
   private :: get_start_end
 
@@ -50,23 +52,99 @@ contains
 
   subroutine analyze(molecule, trj_list, output, option, trajectory)
 
+    ! formal arguments
+    type(s_molecule),         intent(in)    :: molecule
+    type(s_trj_list), target, intent(in)    :: trj_list
+    type(s_output),           intent(in)    :: output
+    type(s_option),           intent(inout) :: option
+    type(s_trajectory),       intent(inout) :: trajectory
+
+    ! local variables
+    type(s_trj_source)                     :: source
+    real(wp), allocatable, dimension(:, :) :: msd
+    integer                                :: msd_out, i, j
+
+
+    if (option%check_only) &
+      return
+
+    ! analysis (shared with the Python interface)
+    !
+    call init_source_file(source, trj_list, molecule%num_atoms)
+    call analyze_msd_unified(molecule, source, option, msd)
+    call finalize_source(source)
+
+    ! write the MSD
+    !
+    if (output%msdfile /= '') then
+      call open_file(msd_out, output%msdfile, IOFileOutputNew)
+      do i = 1, option%delta
+        write(msd_out, '(i0)', advance="no") i
+        do j = 1, size(option%analysis_mols)
+          write(msd_out, '(x, es25.16e3)', advance="no") msd(j, i)
+        end do
+        write(msd_out, '()')
+      end do
+      call close_file(msd_out)
+    end if
+
+    ! Output summary
+    !
+    write(MsgOut,'(A)')      ''
+    write(MsgOut,'(A)')      'Analyze> Detailed information in the output files'
+    write(MsgOut,'(A)')      ''
+    write(MsgOut,'(A)')      '  [msdfile] ' // trim(output%msdfile)
+    write(MsgOut,'(A)')      '    Column 1: time'
+    if (size(option%analysis_mols)==1) then
+      write(MsgOut,'(A)')    '    Column 2: MSD'
+    else
+      write(MsgOut,'(A,i0,A)') '    Columns 2-', size(option%analysis_mols)+1, ': MSD of each selection'
+    end if
+    write(MsgOut,'(A)')      '    Time units are set to the trajectory file interval'
+    write(MsgOut,'(A)')      '    Distance units are those of the trajectory file'
+    write(MsgOut,'(A)')      ''
+    write(MsgOut,'(A)')      '    Number of axes used for each MSD:'
+    do i  = 1, size(option%axes)
+      write(MsgOut,'(A,i0,A,i0)') &
+                             '    Column ', i+1, ': ', size(option%axes(i)%i)
+    end do
+    write(MsgOut, '(A)')     ''
+
+    return
+
+  end subroutine analyze
+
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
+  !  Subroutine    analyze_msd_unified
+  !> @brief        mean square displacement of molecular centers of mass
+  !!               (shared by the CLI and the Python interface)
+  !! @authors      DS, Claude Code
+  !! @param[in]    molecule : molecule information
+  !! @param[inout] source   : trajectory source; every frame is read once
+  !!                          (the analysis period selects frames 1, 1+p, ...)
+  !! @param[inout] option   : option information
+  !! @param[out]   msd      : (n_analysis_sets, delta) mean square displacement
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  subroutine analyze_msd_unified(molecule, source, option, msd)
+
 #   if defined(_OPENMP) || defined(OMP)
     use omp_lib
 #   endif /*_OPENMP || OMP*/
 
     ! formal arguments
     type(s_molecule),        intent(in)    :: molecule
-    type(s_trj_list),        intent(in)    :: trj_list
-    type(s_output),          intent(in)    :: output
+    type(s_trj_source),      intent(inout) :: source
     type(s_option),          intent(inout) :: option
-    type(s_trajectory),      intent(inout) :: trajectory
+    real(wp), allocatable,   intent(out)   :: msd(:,:)
 
     ! local variables
-    type(s_trj_file)                          :: trj_in
-    integer                                   :: ifile, istep, num_trjfiles
-    integer                                   :: nmol, imol, i, j, iaxis, &
-                                                 msd_out, msg_interval, natm, &
-                                                 istep_local
+    type(s_trajectory)                        :: trajectory
+    integer                                   :: istep, frame_status
+    integer                                   :: nmol, imol, i, iaxis, &
+                                                 msg_interval, natm
 
     ! number of steps to be analyzed in total
     integer                                   :: md_steps_analysis
@@ -79,7 +157,7 @@ contains
 
     real(wp), dimension(3)                    :: com, com_local
     real(wp), allocatable, dimension(:, :)    :: sd_sums
-    real(wp), allocatable, dimension(:, :)    :: coord_prev, msd
+    real(wp), allocatable, dimension(:, :)    :: coord_prev
 
     ! array that holds all analysis molecules from all analysis sets
     ! same atoms can apear more than once
@@ -148,12 +226,9 @@ contains
     write(MsgOut, '(A, i0)') &
       "Analyze> Total number of analysis atoms in system: ", natm
 
-    ! open output file
+    ! the analysis period selects frames 1, 1+p, 1+2p, ...
     !
-    if (output%msdfile /= '') &
-      call open_file(msd_out, output%msdfile, IOFileOutputNew)
-
-    num_trjfiles = size(trj_list%filenames)
+    call set_source_period_phase(source, 1)
 
     allocate(sd_sums(size(option%analysis_mols), option%delta), &
              nsamples(option%delta),                            &
@@ -212,8 +287,7 @@ contains
     sd_sums_local = 0_wp
     !$omp end parallel
 
-    md_steps_analysis = sum(ceiling(real(trj_list%md_steps(:), wp) &
-      / trj_list%ana_periods(:)))
+    md_steps_analysis = get_total_frames(source)
 
     ! compute number of samples for each time value
     if (option%oversample) then
@@ -226,71 +300,38 @@ contains
       end forall
     end if
 
-    ! open first trajectory to read the first step for smart unwrapping
-    ! make sure coord shape matches with other trajectory files
-    do ifile = 1, num_trjfiles
-
-      call open_trj(trj_in, trj_list%filenames(ifile), &
-                            trj_list%trj_format,       &
-                            trj_list%trj_type, IOFileInput)
-      call read_trj(trj_in, trajectory)
-      call close_trj(trj_in)
-
-      if (ifile == 1) then
-        ! first unwrap system according to molecules
-        call unwrap_molecules(trajectory%pbc_box, option%all_mols, &
-          trajectory%coord)
-
-        ! unwrap again for all analysis molecules to align substructures
-        call unwrap_molecules(trajectory%pbc_box, all_analysis_mols, &
-          trajectory%coord)
-
-        allocate(coord_prev(3, size(trajectory%coord, 2)))
-        coord_prev(:, :) = trajectory%coord
-
-      else
-
-        if (any(shape(coord_prev) /= shape(trajectory%coord))) then
-          call error_msg("Analyze> Wrong particle number in " &
-            // trim(trj_list%filenames(ifile)))
-        end if
-
-      end if
-
-    end do
-
+    ! read the first frame for smart unwrapping, then rewind
+    !
+    call get_next_frame(source, trajectory, frame_status)
+    if (frame_status /= 0) &
+      call error_msg("Analyze> No frame could be read from the trajectory")
+    ! first unwrap system according to molecules
+    call unwrap_molecules(trajectory%pbc_box, option%all_mols, &
+      trajectory%coord)
+    ! unwrap again for all analysis molecules to align substructures
+    call unwrap_molecules(trajectory%pbc_box, all_analysis_mols, &
+      trajectory%coord)
+    allocate(coord_prev(3, size(trajectory%coord, 2)))
+    coord_prev(:, :) = trajectory%coord
+    call reset_source(source)
 
     ! global analysis step number
     istep = 0
 
-    do ifile = 1, num_trjfiles
+    msg_interval = max(md_steps_analysis / 10, 1)
 
-      write(MsgOut, '(A)') "Analyze> Reading " &
-        // trim(trj_list%filenames(ifile))
-      msg_interval = max(floor(real(trj_list%md_steps(ifile), wp) &
-        / (10 * trj_list%ana_periods(ifile))), 1)
-
-      ! open trajectory file
-      !
-      call open_trj(trj_in, trj_list%filenames(ifile), &
-                            trj_list%trj_format,       &
-                            trj_list%trj_type, IOFileInput)
-
-      do istep_local = 1, trj_list%md_steps(ifile)
-
-        if (mod(istep_local, msg_interval) == 0) then
-          write(MsgOut, "(A, i0, A, i0, A, i0, A, i0)") &
-            "Analyze> File ", ifile, " of ", size(trj_list%filenames), &
-            "; Step ", istep_local, " of ", trj_list%md_steps(ifile)
-        end if
+    do while (has_more_frames(source))
 
         ! read trajectory
         !   coordinates of one MD snapshot are saved in trajectory%coord)
         !
-        call read_trj(trj_in, trajectory)
+        call get_next_frame(source, trajectory, frame_status)
+        if (frame_status /= 0) exit
 
-        ! respect analysis periods setting
-        if (mod(istep_local-1, trj_list%ana_periods(ifile)) /= 0) cycle
+        if (mod(istep + 1, msg_interval) == 0) then
+          write(MsgOut, "(A, i0, A, i0)") &
+            "Analyze> Frame ", istep + 1, " of ", md_steps_analysis
+        end if
 
         istep = istep + 1
 
@@ -354,10 +395,6 @@ contains
         end do
         !$omp end parallel
 
-      end do
-
-      call close_trj(trj_in)
-
     end do
 
     sd_sums = 0_wp
@@ -385,45 +422,22 @@ contains
     end do
 
 
-    if (output%msdfile /= '') then
-      do i = 1, option%delta
-        write(msd_out, '(i0)', advance="no") i
-        do j = 1, size(option%analysis_mols)
-          write(msd_out, '(x, es25.16e3)', advance="no") msd(j, i)
-        end do
-        write(msd_out, '()')
-      end do
-    end if
-
-    ! close output file
+    ! the threadprivate work arrays are SAVEd: free them so that the routine
+    ! can be called again in the same process (Python interface)
     !
-    if (output%msdfile /= '') call close_file(msd_out)
-
-    ! Output summary
-    !
-    write(MsgOut,'(A)')      ''
-    write(MsgOut,'(A)')      'Analyze> Detailed information in the output files'
-    write(MsgOut,'(A)')      ''
-    write(MsgOut,'(A)')      '  [msdfile] ' // trim(output%msdfile)
-    write(MsgOut,'(A)')      '    Column 1: time'
-    if (size(option%analysis_mols)==1) then
-      write(MsgOut,'(A)')    '    Column 2: MSD'
-    else
-      write(MsgOut,'(A,i0,A)') '    Columns 2-', size(option%analysis_mols)+1, ': MSD of each selection'
-    end if
-    write(MsgOut,'(A)')      '    Time units are set to the trajectory file interval'
-    write(MsgOut,'(A)')      '    Distance units are those of the trajectory file'
-    write(MsgOut,'(A)')      ''
-    write(MsgOut,'(A)')      '    Number of axes used for each MSD:'
-    do i  = 1, size(option%axes)
-      write(MsgOut,'(A,i0,A,i0)') &
-                             '    Column ', i+1, ': ', size(option%axes(i)%i)
-    end do
-    write(MsgOut, '(A)')     ''
+    !$omp parallel default(none)
+    if (allocated(sd_sums_local)) deallocate(sd_sums_local)
+    if (allocated(coms))          deallocate(coms)
+    if (allocated(coms_prev))     deallocate(coms_prev)
+    if (allocated(dcoms_sums))    deallocate(dcoms_sums)
+    if (allocated(dcoms_buf))     deallocate(dcoms_buf)
+    if (allocated(omp_mol_starts)) deallocate(omp_mol_starts)
+    if (allocated(omp_mol_ends))   deallocate(omp_mol_ends)
+    !$omp end parallel
 
     return
 
-  end subroutine analyze
+  end subroutine analyze_msd_unified
 
   !======1=========2=========3=========4=========5=========6=========7=========8
   !

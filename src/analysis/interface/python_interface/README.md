@@ -117,38 +117,18 @@ libpython_interface.la* libpython_interface.so*
 
 # Regression test
 
-```
-(genesis) $ cd /path/to/genesis/src/analysis/interface/python_interface/
-(genesis) $ ./all_run.sh
-```
-
-The contents of all_run.sh are as follows. It executes all regression tests.
+The Python tests live in `src/genepie/tests` and run with pytest:
 
 ```
-#!/bin/bash
-
-python crd_convert.py
-python trj_analysis.py
-python wham_analysis.py
-python mbar_analysis_umbrella_1d.py
-python mbar_analysis_umbrella_block.py
-python avecrd_analysis.py
-python kmeans_clustering.py
-python hb_analysis_count_atom.py
-python hb_analysis_count_snap.py
-python rmsd_analysis.py
-python drms_analysis.py
-python rg_analysis.py
-python msd_analysis.py
-python diffusion_analysis.py
-python test_mdanalysis.py
-python test_mdtraj.py
+(genesis) $ cd /path/to/genesis
+(genesis) $ pytest -m "not slow"        # what CI runs
+(genesis) $ pytest                      # everything
 ```
 
-Test for individual analysis tools can be called, for example
+Test for an individual analysis tool can be run, for example
 
 ```
-(genesis) $ python rmsd_analysis.py
+(genesis) $ pytest src/genepie/tests/test_rmsd.py
 ```
 
 ## Python script editing
@@ -376,8 +356,7 @@ Files with changed module names related to mbar_analysis created by `mbar_rename
 
 |File name        |Content                                                                 |
 |:----------------|:-----------------------------------------------------------------------|
-|pmf_impl.fpp     |PMF core logic (adapted from pm_analyze.fpp); returns the PMF as an in-memory array instead of writing a file|
-|pmf_c_mod.fpp    |bind(C) wrapper (`pmf_analysis_c`); receives the control string, calls pmf_impl_mod, and returns the PMF array pointer + dimensions|
+|pmf_c_mod.fpp    |bind(C) wrapper (`pmf_analysis_c`); receives the control string, calls `analyze_pmf_unified` of the CLI module `pm_analyze_mod`, and returns the PMF array pointer + dimensions|
 
 * Reuses `control_from_string` in `../../free_energy/pmf_analysis/pm_control.fpp` and links the static `libpmf_analysis.a` built from the pmf_analysis CLI sources.
 

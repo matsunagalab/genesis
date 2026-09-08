@@ -63,6 +63,9 @@ module trj_source_mod
 
     ! Common
     integer :: ana_period = 1
+    ! frame k (1-based) is analyzed when mod(k - period_phase, ana_period) == 0:
+    ! phase 0 -> frames p, 2p, ... (default); phase 1 -> frames 1, 1+p, ...
+    integer :: period_phase = 0
     integer :: total_frames = 0           ! Total frames to process
     integer :: analyzed_count = 0         ! Frames actually analyzed
   end type s_trj_source
@@ -77,6 +80,7 @@ module trj_source_mod
   public :: get_analyzed_frames
   public :: has_more_frames
   public :: reset_source
+  public :: set_source_period_phase
   public :: finalize_source
   public :: c_filename_to_fortran
 
@@ -467,7 +471,7 @@ contains
 
       ! Check if this step should be analyzed
       ana_period = source%trj_list%ana_periods(source%current_file)
-      if (mod(source%current_step, ana_period) == 0) then
+      if (mod(source%current_step - source%period_phase, ana_period) == 0) then
         status = 0
         return
       end if
@@ -502,7 +506,7 @@ contains
     do while (source%mem_current < source%mem_nframe)
       source%mem_current = source%mem_current + 1
 
-      if (mod(source%mem_current, source%ana_period) == 0) then
+      if (mod(source%mem_current - source%period_phase, source%ana_period) == 0) then
         ! Allocate trajectory if needed
         if (.not. allocated(trajectory%coord)) then
           allocate(trajectory%coord(3, source%mem_natom))
@@ -550,7 +554,7 @@ contains
     do while (source%lazy_current < source%dcd_nframe)
       source%lazy_current = source%lazy_current + 1
 
-      if (mod(source%lazy_current, source%ana_period) == 0) then
+      if (mod(source%lazy_current - source%period_phase, source%ana_period) == 0) then
         call get_frame_by_index(source, source%lazy_current, trajectory, status)
         return
       end if
@@ -779,6 +783,60 @@ contains
 
   !======1=========2=========3=========4=========5=========6=========7=========8
   !
+  !  Subroutine    set_source_period_phase
+  !> @brief        Choose which frames the analysis period selects
+  !! @authors      Claude Code
+  !! @param[inout] source : trajectory source
+  !! @param[in]    phase  : 0 -> frames p, 2p, ... (default);
+  !!                        1 -> frames 1, 1+p, 2p+1, ... (msd_analysis)
+  !! @note         Call right after init_source_*; total_frames is updated.
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  subroutine set_source_period_phase(source, phase)
+
+    ! formal arguments
+    type(s_trj_source), intent(inout) :: source
+    integer,            intent(in)    :: phase
+
+    ! local variables
+    integer :: ifile, total
+
+    source%period_phase = phase
+
+    select case(source%source_type)
+    case(TRJ_SOURCE_FILE)
+      total = 0
+      if (associated(source%trj_list)) then
+        do ifile = 1, size(source%trj_list%md_steps)
+          total = total + count_frames(source%trj_list%md_steps(ifile), &
+                                       source%trj_list%ana_periods(ifile))
+        end do
+      end if
+      source%total_frames = total
+    case(TRJ_SOURCE_MEMORY)
+      source%total_frames = count_frames(source%mem_nframe, source%ana_period)
+    case(TRJ_SOURCE_LAZY_DCD)
+      source%total_frames = count_frames(source%dcd_nframe, source%ana_period)
+    end select
+
+    return
+
+  contains
+
+    integer function count_frames(n, p)
+      integer, intent(in) :: n, p
+      if (phase == 0) then
+        count_frames = n / p
+      else
+        count_frames = (n + p - 1) / p
+      end if
+    end function count_frames
+
+  end subroutine set_source_period_phase
+
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
   !  Subroutine    reset_source
   !> @brief        Reset source to beginning
   !! @authors      Claude Code
@@ -793,8 +851,11 @@ contains
     select case(source%source_type)
 
     case(TRJ_SOURCE_FILE)
-      if (source%current_file > 0) then
-        call close_trj(source%trj_file)
+      ! the file is already closed once the source has been exhausted
+      if (source%current_file > 0 .and. associated(source%trj_list)) then
+        if (source%current_file <= size(source%trj_list%md_steps)) then
+          call close_trj(source%trj_file)
+        end if
       end if
       source%current_file = 0
       source%current_step = 0

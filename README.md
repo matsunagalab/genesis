@@ -96,20 +96,21 @@ uv pip install --index-url https://test.pypi.org/simple/ --extra-index-url https
 ### Testing Your Installation
 
 ```bash
-# Run individual tests (no additional data required)
-python -m genepie.tests.test_rmsd
-python -m genepie.tests.test_crd_convert
-python -m genepie.tests.test_rg
-python -m genepie.tests.test_drms
-python -m genepie.tests.test_avecrd
+uv pip install pytest
+
+# Basic analysis tests (no additional data required)
+pytest --pyargs genepie.tests.test_rmsd genepie.tests.test_crd_convert \
+       genepie.tests.test_rg genepie.tests.test_drms genepie.tests.test_avecrd
 
 # Integration tests (requires ~500 MB download)
 uv pip install gdown mdtraj MDAnalysis
 python -m genepie.tests.download_test_data
-python -m genepie.tests.test_integration
+pytest --pyargs genepie.tests.test_integration
 ```
 
-Note: Some tests (test_trj, test_wham, test_mbar_*, test_atdyn) require the full source repository and are intended for developers only.
+Tests that compare against the CLI reference data (test_trj, test_wham,
+test_pmf, test_mbar, test_atdyn) need the full source repository and skip
+themselves otherwise.
 
 ### Quick Start
 
@@ -296,33 +297,30 @@ uv pip install -e .
 
 ### Running Tests
 
+The suite is a plain pytest suite (`uv pip install -e ".[dev]"` installs
+pytest). Tests find the freshly built library in the build tree, so no
+`make install` is needed.
+
 ```bash
-# Run individual tests
-python -m genepie.tests.test_rmsd
-python -m genepie.tests.test_crd_convert
+# Everything except the memory-heavy tests (what CI runs)
+pytest -m "not slow"
 
-# Run the full local test suite (basic + regression + error + atdyn, and
-# integration if chignolin data has been downloaded)
-cd src/genepie/tests
-./all_run.sh
+# One module, one test
+pytest src/genepie/tests/test_rmsd.py
+pytest src/genepie/tests/test_rmsd.py -k lazy
 
-# Integration tests (requires ~500 MB download)
+# Everything, including test_msd / test_diffusion
+pytest
+
+# Optional data; the tests that need it skip themselves until it is present
 uv pip install gdown mdtraj MDAnalysis
-python -m genepie.tests.download_test_data
-python -m genepie.tests.test_integration    # 42 tests
-
-# Error handling tests
-python -m genepie.tests.test_error_handling # 64 tests
-
-# Regression tests (compare with reference values)
-# These tests use data in tests/regression_test/
-python -m genepie.tests.test_trj
-python -m genepie.tests.test_wham
-python -m genepie.tests.test_pmf
-python -m genepie.tests.test_mbar_1d
-python -m genepie.tests.test_mbar_block
-python -m genepie.tests.test_atdyn
+python -m genepie.tests.download_test_data    # chignolin -> test_integration
+python -m genepie.tests.download_tremd_data   # T-REMD   -> test_mbar_resample
 ```
+
+Tests that compare against the CLI reference values (test_trj, test_wham,
+test_pmf, test_mbar, test_atdyn) read `tests/regression_test/` and therefore
+need the full source repository.
 
 ### Developer Workflow
 
@@ -352,7 +350,7 @@ python -m genepie.tests.test_atdyn
 | Python API changes | Basic tests + `test_integration` |
 | Fortran interface | All tests including regression tests |
 | Bug fixes | Relevant test + add new regression test |
-| New analysis function | Create `test_<name>.py` + add to `all_run.sh` |
+| New analysis function | Create `src/genepie/tests/test_<name>.py` (pytest picks it up) |
 
 #### 4. Contributing (Fork & Pull Request)
 

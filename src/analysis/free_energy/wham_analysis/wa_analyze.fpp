@@ -35,7 +35,7 @@ module wa_analyze_mod
     real(wp),      allocatable :: v(:,:)       ! (nstep, ndim)
   end type s_data_k
 
-  type s_pmf
+  type, public :: s_pmf
     real(wp),      allocatable :: v(:)         ! (nbin)
   end type s_pmf
 
@@ -44,6 +44,8 @@ module wa_analyze_mod
 
   ! subroutines
   public  :: analyze
+  public  :: analyze_wham_unified
+  public  :: compute_grid_center
 
   private :: build_data_k_cv
   private :: build_data_k_dcd
@@ -52,7 +54,6 @@ module wa_analyze_mod
   private :: solve_wham_block
   private :: output_wham
 
-  private :: compute_grid_center
   private :: exec_fhandle_1d
   private :: exec_fhandle_2d
   private :: get_dcd_cv
@@ -90,48 +91,64 @@ contains
     type(s_option),          intent(in)    :: option
 
     ! local variables
-    type(s_data_k), allocatable :: data_k(:)     ! (nbrella)
-    real(wp),       allocatable :: bias_km(:,:)  ! (nbin,nbrella)
-    integer,        allocatable :: h_km(:,:)     ! (nbin,nbrella)
     type(s_pmf),    allocatable :: pmf_m(:)      ! (nblocks)
 
 
-    ! check check only
-    !
     if (option%check_only) &
       return
 
-
-    ! build data_k
-    !
-    if (input%cvfile /= '') then
-
-      call build_data_k_cv (input%cvfile, option, data_k)
-
-    else if (input%dcdfile /= '') then
-
-      call build_data_k_dcd(input%dcdfile, molecule, option, data_k)
-
-    end if
-
-
-    ! build bias_km
-    !
-    call build_bias_km(option, data_k, bias_km)
-
-
-    ! solve WHAM
-    !
-    call solve_wham(option, data_k, bias_km, pmf_m)
-
-
-    ! output f_k and pmf
-    !
+    call analyze_wham_unified(molecule, input, option, pmf_m)
     call output_wham(option, output, pmf_m)
 
     return
 
   end subroutine analyze
+
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
+  !  Subroutine    analyze_wham_unified
+  !> @brief        WHAM (shared by the CLI and the Python interface)
+  !! @authors      NT, Claude Code
+  !! @param[in]    molecule : molecule information
+  !! @param[in]    input    : input information
+  !! @param[in]    option   : option information
+  !! @param[out]   pmf_m    : (nblocks) free energy of every bin; the bin
+  !!                          centers come from compute_grid_center
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  subroutine analyze_wham_unified(molecule, input, option, pmf_m)
+
+    ! formal arguments
+    type(s_molecule),        intent(in)    :: molecule
+    type(s_input),           intent(in)    :: input
+    type(s_option),          intent(in)    :: option
+    type(s_pmf), allocatable, intent(out)  :: pmf_m(:)      ! (nblocks)
+
+    ! local variables
+    type(s_data_k), allocatable :: data_k(:)     ! (nbrella)
+    real(wp),       allocatable :: bias_km(:,:)  ! (nbin,nbrella)
+
+
+    ! read cv data
+    !
+    if (input%cvfile /= '') then
+      call build_data_k_cv (input%cvfile, option, data_k)
+    else if (input%dcdfile /= '') then
+      call build_data_k_dcd(input%dcdfile, molecule, option, data_k)
+    end if
+
+    ! bias term
+    !
+    call build_bias_km(option, data_k, bias_km)
+
+    ! solve WHAM
+    !
+    call solve_wham(option, data_k, bias_km, pmf_m)
+
+    return
+
+  end subroutine analyze_wham_unified
 
   !======1=========2=========3=========4=========5=========6=========7=========8
 

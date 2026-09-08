@@ -15,6 +15,8 @@
 module hb_analyze_mod
 
   use hb_option_str_mod
+  use trj_source_mod
+  use result_sink_mod
   use fileio_trj_mod
   use measure_mod
   use trajectory_str_mod
@@ -51,6 +53,7 @@ module hb_analyze_mod
 
   ! subroutines
   public  :: analyze
+  public  :: analyze_hb_unified
   private :: get_polar_atom
   private :: examine_hbond
   private :: setup_hb_partner_list
@@ -76,22 +79,82 @@ contains
 
     ! formal arguments
     type(s_molecule), target, intent(in)    :: molecule
-    type(s_trj_list),         intent(in)    :: trj_list
+    type(s_trj_list), target, intent(in)    :: trj_list
     type(s_option),           intent(in)    :: option
     type(s_output),           intent(in)    :: output
     type(s_trajectory),       intent(inout) :: trajectory
 
     ! local variables
-    type(s_trj_file)          :: trj_in
-    integer                   :: nstru, ifile, istep, num_trjfiles
-    integer                   :: iatm, jatm, idx, jdx
-    integer                   :: out_unit, hb_out
+    type(s_trj_source)        :: source
+    type(s_result_sink)       :: out_sink, hb_list_sink
 
+
+    if (option%boundary_type == BoundaryTypePBC) then
+      if (trj_list%trj_type /= TrjTypeCoorBox) then
+        call error_msg('hb_analysis> when boundary_type = PBC, TrjType must be COOR+BOX.')
+      end if
+    end if
+
+    ! open output files
+    !
+    if (output%hb_listfile /= '') then
+      call init_sink_file(hb_list_sink, output%hb_listfile)
+    end if
+    call init_sink_file(out_sink, output%outfile)
+
+    ! analysis (shared with the Python interface)
+    !
+    call init_source_file(source, trj_list, molecule%num_atoms)
+    call analyze_hb_unified(molecule, source, option, out_sink, hb_list_sink)
+    call finalize_source(source)
+
+    call finalize_sink(out_sink)
+    call finalize_sink(hb_list_sink)
+
+    ! Output summary
+    !
+    if (.not. option%check_only) &
+      call print_output_info(output, option)
+
+    return
+
+  end subroutine analyze
+
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
+  !  Subroutine    analyze_hb_unified
+  !> @brief        hydrogen bond analysis (shared by the CLI and the Python
+  !!               interface)
+  !! @authors      DM, Claude Code
+  !! @param[in]    molecule     : molecule information
+  !! @param[inout] source       : trajectory source (file, memory or lazy DCD)
+  !! @param[in]    option       : option information
+  !! @param[inout] out_sink     : receives the result lines (file or text)
+  !! @param[inout] hb_list_sink : receives one line per hydrogen bond found
+  !!                              (inactive sink: nothing is written)
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  subroutine analyze_hb_unified(molecule, source, option, out_sink, hb_list_sink)
+
+    ! formal arguments
+    type(s_molecule), target, intent(in)    :: molecule
+    type(s_trj_source),       intent(inout) :: source
+    type(s_option),           intent(in)    :: option
+    type(s_result_sink),      intent(inout) :: out_sink
+    type(s_result_sink),      intent(inout) :: hb_list_sink
+
+    ! local variables
+    type(s_trajectory)        :: trajectory
+    integer                   :: nstru, frame_status
+    integer                   :: iatm, jatm, idx, jdx
     integer,          pointer :: numa(:)
     integer,          pointer :: numr(:)
     character(len=4), pointer :: nama(:)
     character(len=6), pointer :: namr(:)
     character(len=4), pointer :: seg(:)
+    logical                   :: write_hb_list
+    character(len=256)        :: line
 
     type(s_polar_atom), allocatable :: target_group(:)
     type(s_polar_atom), allocatable :: analysis_group(:)
@@ -103,16 +166,11 @@ contains
     integer                         :: hb_total
     integer,            allocatable :: continue_hbond(:,:)
     type(s_hb_info)                 :: hb_list
-    real(wp)                        :: dist, dha_angle, hda_angle
 
-
-    ! formats
 100 format(i10,' | ',a4,1x,a6,1x,i7,1x,a4,' .. ',a4,1x,a6,1x,i7,1x,a4' | ',F6.3,2F9.3)
-102 format(i10,' | ',a4,1x,a6,1x,i7,1x,a4,' .. ',a4,1x,a6,1x,i7,1x,a4' | ',i10)
 104 format(i10,' | ',a4,1x,a6,1x,i7,1x,a4,' .. ',a4,1x,a6)
 106 format(i10,' | ',a4,1x,a6,1x,i7,1x,a4,' .. ',a4,1x,a6,1x,i7,1x,a4)
 108 format('snapshot',i10,' : ',i10,' | ',a4,1x,a6,1x,i7,1x,a4,' .. ',a4,1x,a6,1x,i7,1x,a4)
-
 
     numa => molecule%atom_no
     nama => molecule%atom_name
@@ -120,32 +178,16 @@ contains
     numr => molecule%residue_no
     seg  => molecule%segment_name
 
+    write_hb_list = sink_is_active(hb_list_sink)
 
-    ! check option
+    ! polar atoms and their partners
     !
-    if (option%boundary_type == BoundaryTypePBC) then
-      if (trj_list%trj_type /= TrjTypeCoorBox) then
-        call error_msg('hb_analysis> when boundary_type = PBC, TrjType must be COOR+BOX.')
-      end if
-    end if
-
-    if (output%hb_listfile /= '') then
-      call open_file(hb_out, output%hb_listfile, IOFileOutputNew)
-    end if
-    call open_file(out_unit, output%outfile, IOFileOutputNew)
-
-
-    ! setup polar atoms (O, N)
-    !
-
-    ! for target_atom
     call get_polar_atom(molecule, option%target_atom, target_group)
     call setup_hb_partner_list(molecule, option, target_group,  &
                                partner_list, partner_atom)
 
 #ifdef DEBUG
     write(MsgOut,'(A)') 'HB_Analyze> polar atoms are extracted from the target_atom group.'
-
     do iatm = 1, size(target_group)
       write(MsgOut,'(I7,$)') target_group(iatm)%atom_no
       if (mod(iatm, 10) == 0 .and. iatm /= size(target_group)) then
@@ -155,12 +197,10 @@ contains
     write(MsgOut,'(A/)') ''
 #endif
 
-    ! for analysis_atom
     call get_polar_atom(molecule, option%analysis_atom, analysis_group)
 
 #ifdef DEBUG
     write(MsgOut,'(A)') 'HB_Analyze> polar atoms are extracted from the analysis_atom group.'
-
     do iatm = 1, size(analysis_group)
       write(MsgOut,'(I7,$)') analysis_group(iatm)%atom_no
       if (mod(iatm, 10) == 0 .and. iatm /= size(analysis_group)) then
@@ -173,161 +213,125 @@ contains
     if (option%check_only) &
       return
 
-    ! analysis loop
-    !
     nstru = 0
-    num_trjfiles = size(trj_list%md_steps)
 
     allocate(hb_count(size(partner_atom), size(analysis_group)))
     allocate(continue_hbond(size(target_group), size(analysis_group)))
-
     hb_count(:,:) = 0
     continue_hbond(:,:) = 0
 
-    do ifile = 1, num_trjfiles
+    ! analysis loop
+    !
+    do while (has_more_frames(source))
 
-      ! open trajectory file
-      !
-      call open_trj(trj_in, trj_list%filenames(ifile), &
-                            trj_list%trj_format,       &
-                            trj_list%trj_type, IOFileInput)
+      call get_next_frame(source, trajectory, frame_status)
+      if (frame_status /= 0) exit
 
-      do istep = 1, trj_list%md_steps(ifile)
+      hb_total = 0
+      nstru = nstru + 1
+      write(MsgOut,*) '      number of structures = ', nstru
 
-        ! read trajectory
-        !   coordinates of one MD snapshot are saved in trajectory%coord)
-        !
-        call read_trj(trj_in, trajectory)
+      do idx = 1, size(analysis_group)
+        do jdx = 1, size(target_group)
 
-        if (mod(istep, trj_list%ana_periods(ifile)) == 0) then
+          call examine_hbond(analysis_group(idx), &
+                             target_group(jdx),   &
+                             trajectory,          &
+                             option,              &
+                             hbond, hb_list)
 
-          hb_total = 0
-          nstru = nstru + 1
-          write(MsgOut,*) '      number of structures = ', nstru
+          if (write_hb_list .and. hbond) then
+            iatm = analysis_group(idx)%atom_no
+            jatm = target_group(jdx)%atom_no
+            write(line, 100) &
+                 nstru, &
+                 nama(iatm), namr(iatm), numr(iatm), seg(iatm), &
+                 nama(jatm), namr(jatm), numr(jatm), seg(jatm), &
+                 hb_list%hb_dist, hb_list%dha_angle, hb_list%hda_angle
+            call write_result_line(hb_list_sink, line)
+          end if
 
-          do idx = 1, size(analysis_group)
-            do jdx = 1, size(target_group)
+          select case (option%output_type)
 
-              call examine_hbond(analysis_group(idx), &
-                                 target_group(jdx),   &
-                                 trajectory,          &
-                                 option,              &
-                                 hbond, hb_list)
+            case (HBOutputModeCountSnap)
+              if (hbond) then
+                hb_total = hb_total + 1
+              end if
 
-              if (output%hb_listfile /= '') then
-                if (hbond) then
+            case (HBOutputModeCountAtom)
+              if (hbond) then
+                partner_idx = partner_list(jdx)
+                hb_count(partner_idx, idx) = hb_count(partner_idx, idx) + 1
+              end if
+
+            case (HBOutputModeLifetime)
+              if (hbond) then
+                continue_Hbond(jdx, idx) = continue_Hbond(jdx, idx) + 1
+              else
+                if (continue_Hbond(jdx, idx) > 0) then
                   iatm = analysis_group(idx)%atom_no
                   jatm = target_group(jdx)%atom_no
-
-                  write(hb_out, 100) &
-                       nstru, &
+                  write(line, 108) &
+                       nstru - 1, continue_Hbond(jdx, idx), &
                        nama(iatm), namr(iatm), numr(iatm), seg(iatm), &
-                       nama(jatm), namr(jatm), numr(jatm), seg(jatm), &
-                       hb_list%hb_dist, hb_list%dha_angle, hb_list%hda_angle
+                       nama(jatm), namr(jatm), numr(jatm), seg(jatm)
+                  call write_result_line(out_sink, line)
+                  continue_Hbond(jdx, idx) = 0
                 end if
               end if
 
-              select case (option%output_type)
+          end select
 
-                case (HBOutputModeCountSnap)
-                  if (hbond) then
-                    hb_total = hb_total + 1
-                  end if
-
-                case (HBOutputModeCountAtom)
-                  if (hbond) then
-                    partner_idx = partner_list(jdx)
-                    hb_count(partner_idx, idx) = hb_count(partner_idx, idx) + 1
-                  end if
-
-                case (HBOutputModeLifetime)
-                  if (hbond) then
-                    continue_Hbond(jdx, idx) = continue_Hbond(jdx, idx) + 1
-
-                  else
-                    if (continue_Hbond(jdx, idx) > 0) then
-
-                      iatm = analysis_group(idx)%atom_no
-                      jatm = target_group(jdx)%atom_no
-
-                      write(out_unit,108) &
-                           nstru - 1, continue_Hbond(jdx, idx), &
-                           nama(iatm), namr(iatm), numr(iatm), seg(iatm), &
-                           nama(jatm), namr(jatm), numr(jatm), seg(jatm)
-
-                      continue_Hbond(jdx, idx) = 0
-                    end if
-                  end if
-              end select  
-
-            end do
-          end do
-
-          if (option%output_type == HBOutputModeCountSnap) then
-            write(out_unit,'(i10,2x,i10)') nstru, hb_total
-          end if
-
-        end if
+        end do
       end do
 
-      ! close trajectory file
-      !
-      call close_trj(trj_in)
+      if (option%output_type == HBOutputModeCountSnap) then
+        write(line,'(i10,2x,i10)') nstru, hb_total
+        call write_result_line(out_sink, line)
+      end if
 
     end do
 
-    ! output the results
+    ! summary of the whole trajectory
     !
     select case (option%output_type)
 
     case (HBOutputModeCountAtom)
       do idx = 1, size(analysis_group)
         do partner_idx = 1, size(partner_atom)
-
           if (hb_count(partner_idx, idx) == 0)  &
             cycle
-
           iatm = analysis_group(idx)%atom_no
           jatm = partner_atom(partner_idx)%atom_no
-
           if (partner_atom(partner_idx)%solvent) then
-            write(out_unit, 104) hb_count(partner_idx, idx), &
-                                 nama(iatm), namr(iatm), numr(iatm), seg(iatm), &
-                                 nama(jatm), namr(jatm)
-
+            write(line, 104) hb_count(partner_idx, idx), &
+                             nama(iatm), namr(iatm), numr(iatm), seg(iatm), &
+                             nama(jatm), namr(jatm)
           else
-            write(out_unit, 106) hb_count(partner_idx, idx), &
-                                 nama(iatm), namr(iatm), numr(iatm), seg(iatm), &
-                                 nama(jatm), namr(jatm), numr(jatm), seg(jatm)
+            write(line, 106) hb_count(partner_idx, idx), &
+                             nama(iatm), namr(iatm), numr(iatm), seg(iatm), &
+                             nama(jatm), namr(jatm), numr(jatm), seg(jatm)
           end if
+          call write_result_line(out_sink, line)
         end do
       end do
 
     case (HBOutputModeLifetime)
       do idx = 1, size(analysis_group)
         do jdx = 1, size(target_group)
-
           iatm = analysis_group(idx)%atom_no
           jatm =   target_group(jdx)%atom_no
-
-          if (continue_Hbond(jdx, idx) > 0) &
-            write(out_unit, 108) nstru, continue_Hbond(jdx, idx), &
-                                 nama(iatm), namr(iatm), numr(iatm), seg(iatm), &
-                                 nama(jatm), namr(jatm), numr(jatm), seg(jatm)
+          if (continue_Hbond(jdx, idx) > 0) then
+            write(line, 108) nstru, continue_Hbond(jdx, idx), &
+                             nama(iatm), namr(iatm), numr(iatm), seg(iatm), &
+                             nama(jatm), namr(jatm), numr(jatm), seg(jatm)
+            call write_result_line(out_sink, line)
+          end if
         end do
       end do
+
     end select
 
-    ! close output file
-    !
-    call close_file(out_unit)
-
-    ! Output summary
-    !
-    call print_output_info(output, option)
-
-    ! deacllocate
-    !
     nullify(numa, numr, namr, nama, seg)
     deallocate(analysis_group, target_group)
     deallocate(hb_count, continue_hbond)
@@ -335,7 +339,7 @@ contains
 
     return
 
-  end subroutine analyze
+  end subroutine analyze_hb_unified
 
   !======1=========2=========3=========4=========5=========6=========7=========8
   !

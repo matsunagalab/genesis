@@ -126,6 +126,12 @@ Repository = "https://github.com/matsunagalab/genepie"
 Documentation = "https://www.r-ccs.riken.jp/labs/cbrt/genesis/"
 "Bug Tracker" = "https://github.com/matsunagalab/genepie/issues"
 
+[tool.pytest.ini_options]
+testpaths = ["src/genepie/tests"]
+markers = [
+    "slow: memory-heavy tests that CI skips (run them with 'pytest -m slow')",
+]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

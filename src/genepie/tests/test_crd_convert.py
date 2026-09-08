@@ -1,12 +1,3 @@
-# --------------------------------------------
-if __name__ == "__main__" and __package__ is None:
-    import sys, pathlib
-    pkg_dir = pathlib.Path(__file__).resolve().parent
-    sys.path.insert(0, str(pkg_dir.parent.parent))
-    __package__ = "genepie.tests"
-# --------------------------------------------
-
-import os
 import numpy as np
 from .conftest import BPTI_PDB, BPTI_PSF, BPTI_DCD
 from ..s_molecule import SMolecule
@@ -108,35 +99,3 @@ def test_crd_convert_info():
     assert len(info.frame_counts) == 1
     assert info.frame_counts[0] > 0
     print(f"  Trajectory info: {info.frame_counts[0]} frames")
-
-
-def main():
-    tests = [
-        ("test_crd_convert_info", test_crd_convert_info),
-        ("test_crd_convert_basic", test_crd_convert_basic),
-        ("test_crd_convert_with_selection", test_crd_convert_with_selection),
-        ("test_crd_convert_with_fitting", test_crd_convert_with_fitting),
-        ("test_crd_convert_with_centering", test_crd_convert_with_centering),
-    ]
-
-    passed = 0
-    failed = 0
-
-    for name, test_func in tests:
-        try:
-            test_func()
-            print(f"✓ {name}: PASSED")
-            passed += 1
-        except Exception as e:
-            print(f"✗ {name}: FAILED - {e}")
-            import traceback
-            traceback.print_exc()
-            failed += 1
-
-    print(f"\n{passed}/{passed + failed} tests passed")
-    if failed > 0:
-        raise SystemExit(1)
-
-
-if __name__ == "__main__":
-    main()

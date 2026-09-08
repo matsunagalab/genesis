@@ -16,7 +16,7 @@ module mbar_c_mod
   use, intrinsic :: iso_c_binding
   use s_molecule_c_mod
   use s_trajectories_c_mod
-  use mbar_impl_mod
+  use mbar_analyze_mod
 
   use mbar_control_mod
   use mbar_option_str_mod
@@ -50,7 +50,6 @@ module mbar_c_mod
   end type t_mbar_analysis_ctx
 
   private :: t_mbar_analysis_ctx
-  private :: mbar_analysis_body
 
  contains
   subroutine mbar_analysis_c(ctrl_text, ctrl_len, return_weights, result_fene, &
@@ -128,56 +127,100 @@ module mbar_c_mod
     integer,           intent(out) :: n_weight_step
     type(s_error),     intent(inout) :: err
 
-
     ! local variables
     type(s_ctrl_data)      :: ctrl_data
     type(s_molecule)       :: molecule
     type(s_option)         :: option
     type(s_input)          :: input
     type(s_output)         :: output
-
+    type(s_mbar_result)    :: res
+    real(wp)               :: out_unit
+    real(wp), allocatable  :: f_k2d(:,:)
+    integer                :: i, j, nbrella, nrep_x, nrep_y
 
     my_city_rank = 0
     nproc_city   = 1
     main_rank    = .true.
 
+    nullify(result_fene)
+    nullify(result_weights)
+    n_replica = 0
+    n_blocks = 0
+    n_weight_replica = 0
+    n_weight_step = 0
 
-    ! [Step1] Read control file
-    !
     write(MsgOut,'(A)') '[STEP1] Read Control Parameters for Analysis'
     write(MsgOut,'(A)') ' '
-
     call control_from_string(ctrl_text, ctrl_len, ctrl_data)
 
-
-    ! [Step2] Set relevant variables and structures 
-    !
     write(MsgOut,'(A)') '[STEP2] Set Relevant Variables and Structures'
     write(MsgOut,'(A)') ' '
-
     call setup(ctrl_data, molecule, option, input, output)
 
+    if (return_weights .and. option%nblocks /= 1) then
+      call error_set(err, ERROR_BLOCK_NOT_SUPP, &
+                     'Analyze> in-memory weights require nblocks = 1.')
+      return
+    end if
 
-    ! [Step3] Analyze trajectory
-    !
-    write(MsgOut,'(A)') '[STEP3] Analysis trajectory files'
-    write(MsgOut,'(A)') ' '
+    if (.not. option%check_only) then
 
-    ! call analyze(molecule, s_trajes_c, ana_period, input, output, option)
-    call analyze(molecule, input, output, option, return_weights, &
-                 result_fene, n_replica, n_blocks, result_weights, &
-                 n_weight_replica, n_weight_step, err)
-    if (error_has(err)) return
+      write(MsgOut,'(A)') '[STEP3] Analysis trajectory files'
+      write(MsgOut,'(A)') ' '
+      call analyze_mbar_unified(molecule, input, option, res)
 
+      ! free energies in the Python layout: (n_blocks, n_replica) in Fortran
+      ! order, i.e. (n_replica, n_blocks) for NumPy; the values the CLI
+      ! writes to fenefile
+      out_unit = mbar_output_unit(option)
+      nbrella  = size(res%f_k(1)%v)
+      if (option%dimension == 1) then
+        n_replica = option%num_replicas
+        n_blocks  = option%nblocks
+        allocate(result_fene(n_blocks, n_replica))
+        do i = 1, nbrella
+          result_fene(:, i) = [(res%f_k(j)%v(i)*out_unit, j=1,option%nblocks)]
+        end do
+      else
+        if (option%nblocks > 1) then
+          call error_set(err, ERROR_BLOCK_NOT_SUPP, &
+                         'Output_MBar> n-block > 1 is not supported in 2D')
+          return
+        end if
+        nrep_x = option%rest_nreplica(option%rest_func_no(1, 1))
+        nrep_y = option%rest_nreplica(option%rest_func_no(2, 1))
+        n_replica = nrep_x
+        n_blocks  = nrep_y
+        allocate(f_k2d(nrep_y, nrep_x))
+        f_k2d = reshape(res%f_k(1)%v, (/nrep_y, nrep_x/))
+        allocate(result_fene(n_blocks, n_replica))
+        do j = 1, nrep_y
+          result_fene(:, j) = [(f_k2d(j,i)*out_unit, i=1,nrep_x)]
+        end do
+        deallocate(f_k2d)
+      end if
 
-    ! [Step4] Deallocate memory
-    !
+      ! MBAR weights of every sample (nstep, nbrella)
+      if (return_weights) then
+        if (.not. allocated(res%weight_k)) then
+          call error_set(err, ERROR_NOT_SUPPORTED, &
+                         'Analyze> weights are unavailable for this MBAR input type.')
+          return
+        end if
+        n_weight_step    = size(res%weight_k, 1)
+        n_weight_replica = size(res%weight_k, 2)
+        allocate(result_weights(n_weight_step, n_weight_replica))
+        result_weights(:,:) = res%weight_k(:,:)
+      end if
+
+    end if
+
     write(MsgOut,'(A)') '[STEP4] Deallocate memory'
     write(MsgOut,'(A)') ' '
-
     call dealloc_option(option)
     call dealloc_molecules_all(molecule)
-end subroutine mbar_analysis_main
+
+  end subroutine mbar_analysis_main
 
   !======1=========2=========3=========4=========5=========6=========7=========8
   !

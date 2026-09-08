@@ -38,14 +38,12 @@ The basic analysis tests run on the small trajectories bundled inside the
 package, so they need no extra downloads:
 
 ```bash
-python -m genepie.tests.test_rmsd
-python -m genepie.tests.test_crd_convert
-python -m genepie.tests.test_rg
-python -m genepie.tests.test_drms
-python -m genepie.tests.test_avecrd
+uv pip install pytest
+pytest --pyargs genepie.tests.test_rmsd genepie.tests.test_crd_convert \
+       genepie.tests.test_rg genepie.tests.test_drms genepie.tests.test_avecrd
 ```
 
-If those print `PASSED`, your installation is working.
+If pytest reports every test as passed, your installation is working.
 
 ## Install from source (developers)
 
