@@ -191,6 +191,10 @@ either in-memory NumPy arrays (`cv`, `weight`) or CLI-style filename patterns (`
 - `run_atdyn_md_isolated()` - Run MD in subprocess (crash-safe)
 - `run_atdyn_min_isolated()` - Run minimization in subprocess
 
+A GENESIS error inside the engine (a missing input file, an invalid control value, ...) raises
+`GenesisFortranError` with the engine's message in both variants. After an in-process failure the
+engine's data is not released, so use the `*_isolated` variants when continuing in the same interpreter.
+
 ### Supported File Formats
 
 | Format | Topology | Coordinates | Parameters |

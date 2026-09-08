@@ -103,10 +103,9 @@ def test_atdyn_md_glycam():
     assert result.energies[0, 0] < 0, "total energy should be negative"
 
 
-def test_atdyn_md_bpti():
-    """MD with a GROMACS (bpti) system, PME."""
-    test_dir = _system_dir("bpti")
-    result = genesis_exe.run_atdyn_md_isolated(
+def _bpti_md_kwargs(test_dir):
+    """Arguments of the bpti (GROMACS, PME) MD run, shared by several tests."""
+    return dict(
         grotopfile=os.path.join(test_dir, "bpti.top"),
         grocrdfile=os.path.join(test_dir, "bpti.gro"),
         rstfile=os.path.join(test_dir, "rst"),
@@ -140,6 +139,23 @@ def test_atdyn_md_bpti():
         box_size_y=65.3318,
         box_size_z=65.3318,
     )
+
+
+def _copy_bpti_inputs(dst):
+    """Copy the three bpti input files into ``dst`` (a pathlib.Path)."""
+    import shutil
+
+    src = _system_dir("bpti")
+    dst.mkdir(parents=True, exist_ok=True)
+    for name in ("bpti.top", "bpti.gro", "rst"):
+        shutil.copy(os.path.join(src, name), dst / name)
+    return dst
+
+
+def test_atdyn_md_bpti():
+    """MD with a GROMACS (bpti) system, PME."""
+    test_dir = _system_dir("bpti")
+    result = genesis_exe.run_atdyn_md_isolated(**_bpti_md_kwargs(test_dir))
     assert result.energies[0, 0] < 0, "total energy should be negative"
 
 
@@ -261,3 +277,19 @@ def test_atdyn_min_dppc():
         box_size_z=71.6508,
     )
     assert result.energies[0, 0] < 0, "total energy should be negative"
+
+
+def test_atdyn_md_reports_genesis_errors(tmp_path):
+    """A GENESIS ``error_msg`` inside the engine must become GenesisFortranError.
+
+    ``bpti.top`` includes its force field relative to its own directory, so a
+    copy of the bpti inputs without ``param/`` makes ATDYN fail while reading
+    the topology. Before the ATDYN wrapper ran under the error guard this
+    killed the subprocess with exit code 1 and no message at all.
+    """
+    from ..exceptions import GenesisFortranError
+
+    test_dir = _copy_bpti_inputs(tmp_path / "build" / "bpti")
+    with pytest.raises(GenesisFortranError, match="does not exist"):
+        genesis_exe.run_atdyn_md_isolated(**_bpti_md_kwargs(str(test_dir)))
+

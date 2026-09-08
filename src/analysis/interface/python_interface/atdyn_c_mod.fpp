@@ -56,6 +56,22 @@ module atdyn_c_mod
   real(wp), pointer, save :: energies_ptr(:,:) => null()
   real(wp), pointer, save :: final_coords_ptr(:,:) => null()
 
+  ! Context shared between a bind(C) entry point and its guarded body (see
+  ! run_guarded in error_mod). The entry point copies the control text in,
+  ! runs the body under the library-mode error guard and copies the outputs
+  ! back out. A GENESIS error_msg inside the engine therefore reaches Python
+  ! as a status/message pair instead of terminating the process.
+  type :: t_atdyn_ctx
+    character(kind=c_char), allocatable :: ctrl_text(:)   ! input control text
+    integer       :: ctrl_len       = 0
+    integer       :: nframes        = 0                   ! outputs
+    integer       :: nterms         = 0
+    integer       :: natom          = 0
+    integer       :: converged      = 0
+    real(wp)      :: final_gradient = 0.0_wp
+    type(s_error) :: err
+  end type t_atdyn_ctx
+
 contains
 
   !======1=========2=========3=========4=========5=========6=========7=========8
@@ -63,6 +79,11 @@ contains
   !  Subroutine    atdyn_md_c
   !> @brief        Run MD simulation with control text (string)
   !! @authors      Claude Code
+  !
+  !  On failure status/msg carry the GENESIS error and every result output is
+  !  null/zero. The engine data of a failed run is not released (the unwind
+  !  skips the engine's own cleanup), so callers that need a clean process
+  !  after a failure should use the *_isolated Python variants.
   !
   !======1=========2=========3=========4=========5=========6=========7=========8
 
@@ -93,6 +114,48 @@ contains
     integer(c_int), value :: msglen
 
     ! Local variables
+    type(t_atdyn_ctx), target :: c
+
+    result_energies     = c_null_ptr
+    result_nframes      = 0
+    result_nterms       = 0
+    result_final_coords = c_null_ptr
+    result_natom        = 0
+
+    call pack_ctrl_text(c, ctrl_text, ctrl_len)
+
+    call run_guarded(atdyn_md_body, c, c%err, status, msg, msglen)
+    if (status /= 0) return
+
+    result_energies     = c_loc(energies_ptr)
+    result_nframes      = c%nframes
+    result_nterms       = c%nterms
+    result_final_coords = c_loc(final_coords_ptr)
+    result_natom        = c%natom
+
+  end subroutine atdyn_md_c
+
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
+  !  Subroutine    atdyn_md_body
+  !> @brief        Guarded body of atdyn_md_c
+  !! @authors      Claude Code
+  !! @param[in]    ctx : C pointer to the caller's t_atdyn_ctx
+  !
+  !  Module procedure by design: run_guarded takes c_funloc() of it, and an
+  !  internal procedure would need a trampoline (see error_mod).
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  subroutine atdyn_md_body(ctx) bind(C, name="atdyn_md_body")
+
+    implicit none
+
+    ! Arguments
+    type(c_ptr), value :: ctx
+
+    ! Local variables
+    type(t_atdyn_ctx), pointer :: c
     type(s_ctrl_data)      :: ctrl_data
     type(s_molecule)       :: molecule
     type(s_enefunc)        :: enefunc
@@ -112,11 +175,13 @@ contains
     integer                :: omp_get_max_threads
 #endif
 
-    ! Initialize
-    status = 0
-    result_nframes = 0
-    result_nterms = 0
-    result_natom = 0
+    call c_f_pointer(ctx, c)
+
+    if (c%ctrl_len <= 0) then
+      call error_set(c%err, ERROR_INVALID_PARAM, &
+                     'atdyn_md_c: control text is empty')
+      return
+    end if
 
     ! Reset timers for clean state in library mode
     call reset_timers()
@@ -142,7 +207,7 @@ contains
     write(MsgOut,'(A)') '[STEP1] Read Control Parameters'
     write(MsgOut,'(A)') ' '
 
-    call control_md_from_string(ctrl_text, ctrl_len, ctrl_data)
+    call control_md_from_string(c%ctrl_text, c%ctrl_len, ctrl_data)
 
     ! [Step2] Setup MPI (no-op for non-MPI)
     write(MsgOut,'(A)') '[STEP2] Setup MPI'
@@ -211,11 +276,9 @@ contains
       final_coords_ptr(3, i) = dynvars%coord(3, i)
     end do
 
-    result_energies = c_loc(energies_ptr)
-    result_nframes = nframes
-    result_nterms = nterms
-    result_final_coords = c_loc(final_coords_ptr)
-    result_natom = natom
+    c%nframes = nframes
+    c%nterms  = nterms
+    c%natom   = natom
 
     ! [Step6] Deallocate simulation data (but keep results)
     write(MsgOut,'(A)') ' '
@@ -234,16 +297,15 @@ contains
     call timer(TimerTotal, TimerOff)
     call output_time
 
-    status = 0
-    if (msglen > 0) msg(1) = c_null_char
-
-  end subroutine atdyn_md_c
+  end subroutine atdyn_md_body
 
   !======1=========2=========3=========4=========5=========6=========7=========8
   !
   !  Subroutine    atdyn_min_c
   !> @brief        Run energy minimization with control text (string)
   !! @authors      Claude Code
+  !
+  !  Error reporting and cleanup follow atdyn_md_c.
   !
   !======1=========2=========3=========4=========5=========6=========7=========8
 
@@ -279,6 +341,49 @@ contains
     integer(c_int), value :: msglen
 
     ! Local variables
+    type(t_atdyn_ctx), target :: c
+
+    result_energies       = c_null_ptr
+    result_nsteps         = 0
+    result_nterms         = 0
+    result_final_coords   = c_null_ptr
+    result_natom          = 0
+    result_converged      = 0
+    result_final_gradient = 0.0_c_double
+
+    call pack_ctrl_text(c, ctrl_text, ctrl_len)
+
+    call run_guarded(atdyn_min_body, c, c%err, status, msg, msglen)
+    if (status /= 0) return
+
+    result_energies       = c_loc(energies_ptr)
+    result_nsteps         = c%nframes
+    result_nterms         = c%nterms
+    result_final_coords   = c_loc(final_coords_ptr)
+    result_natom          = c%natom
+    result_converged      = c%converged
+    result_final_gradient = c%final_gradient
+
+  end subroutine atdyn_min_c
+
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
+  !  Subroutine    atdyn_min_body
+  !> @brief        Guarded body of atdyn_min_c
+  !! @authors      Claude Code
+  !! @param[in]    ctx : C pointer to the caller's t_atdyn_ctx
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  subroutine atdyn_min_body(ctx) bind(C, name="atdyn_min_body")
+
+    implicit none
+
+    ! Arguments
+    type(c_ptr), value :: ctx
+
+    ! Local variables
+    type(t_atdyn_ctx), pointer :: c
     type(s_ctrl_data)      :: ctrl_data
     type(s_molecule)       :: molecule
     type(s_enefunc)        :: enefunc
@@ -294,13 +399,13 @@ contains
     integer                :: omp_get_max_threads
 #endif
 
-    ! Initialize
-    status = 0
-    result_nsteps = 0
-    result_nterms = 0
-    result_natom = 0
-    result_converged = 0
-    result_final_gradient = 0.0_c_double
+    call c_f_pointer(ctx, c)
+
+    if (c%ctrl_len <= 0) then
+      call error_set(c%err, ERROR_INVALID_PARAM, &
+                     'atdyn_min_c: control text is empty')
+      return
+    end if
 
     ! Reset timers for clean state in library mode
     call reset_timers()
@@ -326,7 +431,7 @@ contains
     write(MsgOut,'(A)') '[STEP1] Read Control Parameters for Minimization'
     write(MsgOut,'(A)') ' '
 
-    call control_min_from_string(ctrl_text, ctrl_len, ctrl_data)
+    call control_min_from_string(c%ctrl_text, c%ctrl_len, ctrl_data)
 
     ! [Step2] Setup MPI
     write(MsgOut,'(A)') '[STEP2] Setup MPI'
@@ -394,13 +499,11 @@ contains
       final_coords_ptr(3, i) = dynvars%coord(3, i)
     end do
 
-    result_energies = c_loc(energies_ptr)
-    result_nsteps = nsteps
-    result_nterms = nterms
-    result_final_coords = c_loc(final_coords_ptr)
-    result_natom = natom
-    result_converged = 0  ! TODO: get actual convergence status
-    result_final_gradient = dynvars%rms_gradient
+    c%nframes        = nsteps
+    c%nterms         = nterms
+    c%natom          = natom
+    c%converged      = 0  ! TODO: get actual convergence status
+    c%final_gradient = dynvars%rms_gradient
 
     ! [Step6] Deallocate simulation data
     write(MsgOut,'(A)') ' '
@@ -418,10 +521,34 @@ contains
     call timer(TimerTotal, TimerOff)
     call output_time
 
-    status = 0
-    if (msglen > 0) msg(1) = c_null_char
+  end subroutine atdyn_min_body
 
-  end subroutine atdyn_min_c
+  !======1=========2=========3=========4=========5=========6=========7=========8
+  !
+  !  Subroutine    pack_ctrl_text
+  !> @brief        Copy the C control text into the context
+  !! @authors      Claude Code
+  !
+  !======1=========2=========3=========4=========5=========6=========7=========8
+
+  subroutine pack_ctrl_text(c, ctrl_text, ctrl_len)
+
+    implicit none
+
+    type(t_atdyn_ctx),      intent(inout) :: c
+    character(kind=c_char), intent(in)    :: ctrl_text(*)
+    integer(c_int),         intent(in)    :: ctrl_len
+
+    integer :: i
+
+    c%ctrl_len = max(0, int(ctrl_len))
+    allocate(c%ctrl_text(max(c%ctrl_len, 1)))
+    c%ctrl_text(1) = c_null_char
+    do i = 1, c%ctrl_len
+      c%ctrl_text(i) = ctrl_text(i)
+    end do
+
+  end subroutine pack_ctrl_text
 
   !======1=========2=========3=========4=========5=========6=========7=========8
   !

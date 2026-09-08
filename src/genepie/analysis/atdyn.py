@@ -693,9 +693,25 @@ sys.stdout.buffer.write(base64.b64encode(pickle.dumps(output)))
         raise TimeoutError(f"atdyn {task_description} timed out after {timeout} seconds") from e
 
     if proc.returncode != 0:
-        stderr_text = proc.stderr.decode('utf-8', errors='replace')
+        # GENESIS errors normally come back as a pickled GenesisFortranError
+        # (the engine runs under the library error guard), so a bare non-zero
+        # exit means the engine died outside it: a Fortran runtime error, a
+        # crash, or a signal. Its own output was discarded by the child, so
+        # point at the way to see it.
+        stderr_text = proc.stderr.decode('utf-8', errors='replace').strip()
+        if proc.returncode < 0:
+            import signal
+            try:
+                how = f"was killed by {signal.Signals(-proc.returncode).name}"
+            except ValueError:
+                how = f"was killed by signal {-proc.returncode}"
+        else:
+            how = f"exited with code {proc.returncode}"
         raise RuntimeError(
-            f"atdyn subprocess failed with code {proc.returncode}:\n{stderr_text}"
+            f"atdyn {task_description} subprocess {how}.\n"
+            + (f"stderr:\n{stderr_text}\n" if stderr_text else "")
+            + "The engine's own output is not captured; run the same input "
+            "with the atdyn command-line program to see it."
         )
 
     try:
@@ -708,14 +724,19 @@ sys.stdout.buffer.write(base64.b64encode(pickle.dumps(output)))
         )
 
     if not output["success"]:
-        from ..exceptions import GenesisFortranError, GenesisValidationError
+        from .. import exceptions as _exc
         error_type = output.get("error_type", "")
         error_msg = output.get("error", "Unknown error")
 
-        if "GenesisFortran" in error_type:
-            raise GenesisFortranError(error_msg)
+        # Re-raise the same typed error the child saw (e.g. GenesisFortranFileError),
+        # falling back to the base class for a subclass this module does not know.
+        exc_cls = getattr(_exc, error_type, None)
+        if isinstance(exc_cls, type) and issubclass(exc_cls, _exc.GenesisFortranError):
+            raise exc_cls(error_msg)
+        elif "GenesisFortran" in error_type:
+            raise _exc.GenesisFortranError(error_msg)
         elif error_type == "GenesisValidationError":
-            raise GenesisValidationError(error_msg)
+            raise _exc.GenesisValidationError(error_msg)
         else:
             raise RuntimeError(f"{error_type}: {error_msg}\n{output.get('traceback', '')}")
 
