@@ -8,6 +8,7 @@
 * Jupyter notebook
 * Regression test
 * Python script editing
+* Adding a new analysis wrapper
 * Folder and file description
 
 # Required environment
@@ -193,88 +194,14 @@ if __name__ == "__main__":
     main()
 ```
 
-The `trj_analysis.py` script implements regression tests using the CustomTestCase class, so the keywords for crd_convert are written in `custom_test_case.py`.
+The regression tests in `src/genepie/tests/` are plain pytest functions; shared paths, fixtures and helpers are in `conftest.py`.
 
-## Adding a new analysis wrapper (library-mode error guard)
+## Adding a new analysis wrapper
 
-GENESIS reports fatal errors with `error_msg`, which calls `exit(1)`. Inside
-Python that would kill the interpreter, so every `bind(C)` entry point runs its
-work under the error guard in `error_mod` (`run_guarded`, setjmp/longjmp based).
-The body that the guard calls must be a **module procedure** that receives its
-data through a context variable. Never use an internal (`contains`) procedure
-as the callback: taking `c_funloc()` of it makes gfortran generate a
-trampoline, which requires an executable stack, which `dlopen()` refuses on
-glibc >= 2.41 (and which crashes on non-executable stacks). gfortran's
-`-Wtrampolines` reports any such callback.
-
-Skeleton for a new tool `foo` (see `rmsd_analysis_lazy_c` in `rmsd_c_mod.fpp`
-for a complete, tested example):
-
-```fortran
-  ! 1. Context: everything the body reads, writes or acquires.
-  type :: t_foo_ctx
-    type(c_ptr) :: coords_ptr = c_null_ptr   ! inputs (copies of the C arguments)
-    integer     :: natom = 0
-    integer     :: nframe = 0
-    type(c_ptr) :: result_ptr = c_null_ptr
-    integer     :: nstru = 0                 ! outputs (copied back by the wrapper)
-    type(s_error)       :: err               ! error state
-    type(s_trj_source)  :: source            ! resources released by the wrapper
-    type(s_result_sink) :: sink
-  end type t_foo_ctx
-
-  ! 2. Entry point: pack -> run_guarded -> unpack -> release.
-  subroutine foo_analysis_c(coords_ptr, natom, nframe, result_ptr, nstru, &
-                            status, msg, msglen) bind(C, name="foo_analysis_c")
-    type(c_ptr),    value       :: coords_ptr, result_ptr
-    integer(c_int), value       :: natom, nframe, msglen
-    integer(c_int), intent(out) :: nstru, status
-    character(kind=c_char), intent(out) :: msg(*)
-    type(t_foo_ctx), target :: c
-
-    c%coords_ptr = coords_ptr
-    c%natom      = natom
-    c%nframe     = nframe
-    c%result_ptr = result_ptr
-
-    call run_guarded(foo_analysis_body, c, c%err, status, msg, msglen)
-
-    nstru = c%nstru
-    call finalize_sink(c%sink)
-    call finalize_source(c%source)
-  end subroutine foo_analysis_c
-
-  ! 3. Body: a bind(C) module procedure; failures go into c%err only.
-  subroutine foo_analysis_body(ctx) bind(C, name="foo_analysis_body")
-    type(c_ptr), value :: ctx
-    type(t_foo_ctx), pointer :: c
-    real(wp), pointer :: coords(:,:,:), result(:)
-
-    call c_f_pointer(ctx, c)
-    if (c%natom <= 0) then
-      call error_set(c%err, ERROR_INVALID_PARAM, "foo_analysis_c: natom must be positive")
-      return
-    end if
-    call c_f_pointer(c%coords_ptr, coords, [3, c%natom, c%nframe])
-    call c_f_pointer(c%result_ptr, result, [c%nframe])
-    ! ... init_source_*(c%source, ...), init_sink_array(c%sink, result, c%nframe),
-    !     then call the shared analysis core. If it calls error_msg, the guard
-    !     turns that into c%err and the wrapper reports it to Python.
-  end subroutine foo_analysis_body
-```
-
-Rules of thumb:
-
-- Give the body and the context type a name unique to the module: `bind(C)`
-  names are global symbols of the shared library.
-- Inputs are plain copies. Reference arguments (`character(*)` strings,
-  `s_molecule_c`) are either converted first, as `c_filename_to_fortran` does
-  for file names, or stored as `c_ptr` via `c_loc` (add `target` to the dummy).
-- Allocatable components of the context are freed automatically when the entry
-  point returns. Only units/files need explicit `finalize_*` calls, and those
-  are safe to call even when the body never initialised the object.
-- Never call `error_to_c` from the body: `run_guarded` reports `c%err`.
-- The interface is not thread-safe, and the guard is not either.
+The step-by-step guide and the wrapper skeleton (context type + `run_guarded` +
+`bind(C)` body, plus the rules of thumb) are in the repository README:
+[Adding a New Analysis Tool](../../../../README.md#adding-a-new-analysis-tool).
+`rmsd_c_mod.fpp` is a complete, tested example.
 
 # Folder and file description
 

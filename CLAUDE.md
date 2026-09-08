@@ -57,7 +57,7 @@ the source of truth:
   a context derived type; the guarded body must be a module procedure. Never
   take `c_funloc` of an internal procedure: the trampoline needs an executable
   stack, which `dlopen` rejects on glibc 2.41+. See the wrapper skeleton in
-  `src/analysis/interface/python_interface/README.md`.
+  `README.md` ("Adding a New Analysis Tool").
 - Validate paths, enums, dimensions, sizes, and contiguity before crossing the
   language boundary. Map Fortran status/message outputs through
   `exceptions.py`; do not replace typed errors with generic exceptions.

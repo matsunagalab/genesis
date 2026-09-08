@@ -297,8 +297,13 @@ uv pip install -e .
 
 ### Running Tests
 
-The suite is a plain pytest suite (`uv pip install -e ".[dev]"` installs
-pytest). Tests find the freshly built library in the build tree, so no
+The test suite is plain **pytest**: every test is a `test_*` function in
+`src/genepie/tests/test_<tool>.py` (no `unittest` classes, no custom base
+class). Shared paths, fixtures and skip markers (`requires_regression_data`,
+`requires_chignolin`, `requires_tremd`, ...) live in
+`src/genepie/tests/conftest.py`; `testpaths` and the `slow` marker are
+configured in `pyproject.toml`. `uv pip install -e ".[dev]"` installs pytest,
+and tests find the freshly built library in the build tree, so no
 `make install` is needed.
 
 ```bash
@@ -494,7 +499,8 @@ is abstracted:
   Implemented as `TRJ_SOURCE_FILE`, `TRJ_SOURCE_MEMORY`, and `TRJ_SOURCE_LAZY_DCD` in `trj_source_mod`.
 - `result_sink` — where results are written to: an output file (CLI) or a zerocopy NumPy array (Python).
 
-Unified tools: RMSD (`ra_analyze.fpp`), RG (`rg_analyze.fpp`), DRMS (`dr_analyze.fpp`).
+Every tool with a Python API follows this pattern (RMSD, RG, DRMS, trj, avecrd, HB, MSD, k-means,
+diffusion, WHAM, MBAR, PMF); see [Adding a New Analysis Tool](#adding-a-new-analysis-tool).
 
 #### 4. Structured error handling
 
@@ -514,24 +520,145 @@ All inherit from `GenesisFortranError` → `GenesisError`. See [CLAUDE.md](CLAUD
 
 ### Adding a New Analysis Tool
 
-**Recommended: Unified Architecture** (for RMSD, RG, DRMS pattern)
+There is one pattern: **the science lives in the CLI module, and the Python interface only marshals
+arguments**. Every tool that has both a command-line program and a Python API shares a single implementation
+(`analyze_<tool>_unified`), so CLI and Python results are identical by construction and there is exactly one
+place to fix a bug. The former `*_impl.fpp` copies of CLI code in `src/analysis/interface/python_interface/`
+are gone; do not add new ones.
 
-When CLI already exists with `trj_source_mod` support:
-1. Export `analyze_*_unified()` from CLI's `*_analyze.fpp` with primitive arguments
-2. Create `*_c_mod.fpp` that calls unified function via `init_source_memory()` + `init_sink_array()`
-3. Add function signature to `libgenesis.py` and wrapper to `genesis_exe.py`
-4. Add test as `tests/test_<name>.py`
+#### Step 1. Give the CLI module a unified core
 
-**Alternative: Separate Implementation** (for HB, WHAM, MBAR pattern)
+In `src/analysis/<family>/<tool>_analysis/*_analyze.fpp`, split `analyze()` into two routines:
 
-When unified pattern doesn't fit:
-1. Create `*_c_mod.fpp` with `bind(C)` interface
-2. Create `*_impl.fpp` for analysis implementation
-3. Update `Makefile.am` to include new `.fpp` files
-4. Add function signature to `libgenesis.py` and wrapper to `genesis_exe.py`
-5. Add test as `tests/test_<name>.py`
+- `analyze_<tool>_unified(...)` — the computation. It reads frames through `trj_source_mod`
+  (`s_trj_source`, `get_next_frame`, `reset_source` when the trajectory is read more than once) and returns
+  its results through `result_sink_mod` sinks or through array arguments. It never opens a file by name and
+  knows nothing about the CLI control file or NumPy.
+- `analyze(...)` — the CLI driver. It keeps the old signature, builds the inputs from `option`/`input`,
+  calls `init_source_file(...)`, opens file sinks (`init_sink_file`, `init_sink_file_rows`,
+  `init_sink_text`), calls the core and writes whatever the core returned in memory.
 
-See [CLAUDE.md](CLAUDE.md) for detailed instructions.
+`result_sink_mod` has three flavours, each with a file and an in-memory form: one scalar per frame
+(`write_result`), one row of values per frame (`write_result_row`) and text lines (`write_result_line`).
+Free-energy tools (WHAM, MBAR, PMF) and file-based tools (diffusion) have no trajectory source; their core
+simply returns arrays and the driver writes them.
+
+Examples: `ra_analyze.fpp` (one scalar per frame), `ta_analyze.fpp` (rows per frame, six streams),
+`aa_analyze.fpp` (scalar sink + a result written back into `molecule`), `hb_analyze.fpp` (text lines),
+`ma_analyze.fpp` / `kc_analyze.fpp` (arrays, several passes over the trajectory),
+`wa_analyze.fpp` / `mbar_analyze.fpp` / `pm_analyze.fpp` (arrays).
+
+Check that the CLI output is unchanged with the regression harness:
+
+```bash
+cd tests/regression_test/test_analysis
+python test_analysis.py /path/to/src/analysis/<family>/<tool>_analysis -- Test_<tool>_analysis
+```
+
+#### Step 2. Write the `bind(C)` wrapper (`<tool>_c_mod.fpp`)
+
+GENESIS reports fatal errors with `error_msg`, which calls `exit(1)`. Inside Python that would kill the
+interpreter, so every `bind(C)` entry point runs its work under the library-mode error guard in `error_mod`
+(`run_guarded`, setjmp/longjmp based): an `error_msg` inside the analysis core becomes a Python exception
+instead of a process exit. The body that the guard calls must be a **module procedure** that receives its
+data through a context variable. Never use an internal (`contains`) procedure as the callback: taking
+`c_funloc()` of it makes gfortran generate a trampoline, which needs an executable stack, which `dlopen()`
+refuses on glibc >= 2.41. The build fails with `-Werror=trampolines` on purpose if this happens.
+
+Skeleton for a new tool `foo` in `src/analysis/interface/python_interface/foo_c_mod.fpp`
+(`rmsd_c_mod.fpp` is a complete, tested example; `hb_c_mod.fpp` shows a control-text based tool with a
+text sink):
+
+```fortran
+  ! 1. Context: everything the body reads, writes or acquires.
+  type :: t_foo_ctx
+    type(c_ptr) :: coords_ptr = c_null_ptr   ! inputs (copies of the C arguments)
+    integer     :: natom = 0
+    integer     :: nframe = 0
+    type(c_ptr) :: result_ptr = c_null_ptr
+    integer     :: nstru = 0                 ! outputs (copied back by the wrapper)
+    type(s_error)       :: err               ! error state
+    type(s_trj_source)  :: source            ! resources released by the wrapper
+    type(s_result_sink) :: sink
+  end type t_foo_ctx
+
+  ! 2. Entry point: pack -> run_guarded -> unpack -> release.
+  subroutine foo_analysis_c(coords_ptr, natom, nframe, result_ptr, nstru, &
+                            status, msg, msglen) bind(C, name="foo_analysis_c")
+    type(c_ptr),    value       :: coords_ptr, result_ptr
+    integer(c_int), value       :: natom, nframe, msglen
+    integer(c_int), intent(out) :: nstru, status
+    character(kind=c_char), intent(out) :: msg(*)
+    type(t_foo_ctx), target :: c
+
+    c%coords_ptr = coords_ptr
+    c%natom      = natom
+    c%nframe     = nframe
+    c%result_ptr = result_ptr
+
+    call run_guarded(foo_analysis_body, c, c%err, status, msg, msglen)
+
+    nstru = c%nstru
+    call finalize_sink(c%sink)
+    call finalize_source(c%source)
+  end subroutine foo_analysis_c
+
+  ! 3. Body: a bind(C) module procedure; failures go into c%err only.
+  subroutine foo_analysis_body(ctx) bind(C, name="foo_analysis_body")
+    type(c_ptr), value :: ctx
+    type(t_foo_ctx), pointer :: c
+    real(wp), pointer :: coords(:,:,:), result(:)
+
+    call c_f_pointer(ctx, c)
+    if (c%natom <= 0) then
+      call error_set(c%err, ERROR_INVALID_PARAM, "foo_analysis_c: natom must be positive")
+      return
+    end if
+    call c_f_pointer(c%coords_ptr, coords, [3, c%natom, c%nframe])
+    call c_f_pointer(c%result_ptr, result, [c%nframe])
+    ! ... init_source_*(c%source, ...), init_sink_array(c%sink, result, c%nframe),
+    !     then call analyze_foo_unified(...). If it calls error_msg, the guard
+    !     turns that into c%err and the wrapper reports it to Python.
+  end subroutine foo_analysis_body
+```
+
+Rules of thumb:
+
+- Give the body and the context type a name unique to the module: `bind(C)` names are global symbols of the
+  shared library.
+- Inputs are plain copies. Reference arguments (`character(*)` strings, `s_molecule_c`) are either converted
+  first, as `c_filename_to_fortran` does for file names, or stored as `c_ptr` via `c_loc` (add `target` to
+  the dummy argument).
+- In-memory trajectories: `init_source_memory(...)`. Lazy DCD input: `init_source_lazy_dcd(...)`, with the
+  Python wrapper dispatching on `trajs.is_lazy` (see `rmsd.py`). NumPy result buffers: `init_sink_array` /
+  `init_sink_array_rows` on views made with `c_f_pointer`.
+- Allocatable components of the context are freed automatically when the entry point returns. Only
+  units/files need explicit `finalize_*` calls, and those are safe to call even when the body never
+  initialised the object.
+- Results handed to Python (`c_ptr` to a C string or array) are freed by Python only
+  (`deallocate_c_string`, `deallocate_double2`). Never keep them in a Fortran `save` pointer that a later
+  call frees again.
+- Never call `error_to_c` from the body: `run_guarded` reports `c%err`.
+- The interface is not thread-safe, and the guard is not either.
+
+Register the file in `src/analysis/interface/python_interface/Makefile.am` and `Makefile.depends`, then
+`make clean && make`.
+
+#### Step 3. Python side
+
+1. Add the exact C signature (`argtypes` / `restype`) to `src/genepie/libgenesis.py`.
+2. Add the wrapper in `src/genepie/analysis/<tool>.py` and re-export it from
+   `src/genepie/analysis/__init__.py` (which flows through to `genesis_exe`). Conventions:
+   - Convert the molecule once with `molecule.to_SMoleculeC()` and free it in `finally:` with
+     `deallocate_s_molecule_c`.
+   - Pre-allocate result arrays in NumPy (`float64`, C-contiguous) and pass `.ctypes.data_as(c_void_p)`
+     for zerocopy output. Python `(nframe, natom, 3)` C-order aliases Fortran `(3, natom, nframe)`.
+   - Wrap the call in `with fortran_status() as (status, msg, msglen):` so Fortran errors surface as the
+     typed exceptions above.
+   - Return a small `namedtuple` so results are self-describing.
+3. Add `src/genepie/tests/test_<tool>.py` with plain `test_*` functions; pytest collects it automatically
+   (see [Running Tests](#running-tests)). Compare against the CLI reference data in
+   `tests/regression_test/` when it exists (`test_trj.py` is an example).
 
 ---
 
