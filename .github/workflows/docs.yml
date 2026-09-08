@@ -55,10 +55,33 @@ jobs:
         with:
           path: docs/_build/html
 
-  deploy:
-    # Only deploy on pushes to main; PRs just build to catch breakage.
+  pages-enabled:
+    # Deploying needs GitHub Pages to be switched on for the repository
+    # (Settings > Pages > Source: GitHub Actions). Until that is done the site
+    # is only built and kept as the workflow artifact, and the deploy job is
+    # skipped instead of failing with "Creating Pages deployment failed".
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Query the Pages site of this repository
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/pages" > /dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GitHub Pages is not enabled for ${GITHUB_REPOSITORY}; the built site is not deployed."
+          fi
+
+  deploy:
+    # Only deploy on pushes to main, and only once Pages is enabled; PRs just
+    # build to catch breakage.
+    if: needs.pages-enabled.outputs.enabled == 'true'
+    needs: [build, pages-enabled]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
